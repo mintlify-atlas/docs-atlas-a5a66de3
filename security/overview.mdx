@@ -1,0 +1,182 @@
+---
+title: Security Overview
+description: Understanding KubeLB's security model and threat protection
+---
+
+KubeLB implements a comprehensive security model designed for multi-tenant environments, ensuring isolation between tenant clusters while maintaining centralized load balancing capabilities.
+
+## Security Architecture
+
+KubeLB's security architecture is built on three core principles:
+
+1. **Tenant Isolation**: Each tenant cluster operates in its own dedicated namespace with RBAC-enforced boundaries
+2. **Secure Secret Propagation**: Controlled secret synchronization using the SyncSecret CRD
+3. **Supply Chain Security**: Signed artifacts with SBOMs for all releases
+
+## Threat Model
+
+KubeLB protects against the following threat scenarios:
+
+### Tenant-to-Tenant Access
+
+**Threat**: A compromised tenant attempting to access or modify resources belonging to other tenants.
+
+**Mitigation**:
+- Namespace-level isolation using the `tenant-{name}` pattern
+- Role-based access control limiting each tenant to their namespace
+- Service account tokens scoped to specific tenant namespaces
+
+### Unauthorized Resource Manipulation
+
+**Threat**: Unauthorized modification of LoadBalancer, Route, or SyncSecret resources.
+
+**Mitigation**:
+- Strict RBAC policies defined in `config/rbac/role.yaml`
+- Separate viewer and editor roles for LoadBalancer resources
+- Owner references ensuring resource lifecycle management
+
+### Secret Exposure
+
+**Threat**: Sensitive credentials being exposed or leaked between clusters.
+
+**Mitigation**:
+- SyncSecret CRD wrapping Kubernetes Secrets with controlled propagation
+- Secrets stored with randomized names using UID-based naming
+- Automatic cleanup via finalizers when resources are deleted
+
+### Supply Chain Attacks
+
+**Threat**: Malicious or compromised container images, binaries, or Helm charts.
+
+**Mitigation**:
+- All container images signed with Sigstore Cosign (keyless signing)
+- SBOM (Software Bill of Materials) in SPDX format for all releases
+- Automated vulnerability scanning with Trivy
+- HIGH/CRITICAL vulnerabilities block releases
+
+<Note>
+See [SBOM.md](https://github.com/kubermatic/kubelb/blob/main/SBOM.md) for detailed supply chain security information.
+</Note>
+
+## Security Features
+
+### Namespace Isolation
+
+Each tenant is assigned a dedicated namespace following the pattern `tenant-{tenant-name}`. Resources are strictly confined to their respective namespaces through:
+
+- RBAC policies enforcing namespace boundaries
+- Service accounts with namespace-scoped permissions
+- Owner references for automatic resource cleanup
+
+Reference: `internal/controllers/kubelb/tenant_controller.go:178`
+
+### RBAC Enforcement
+
+KubeLB implements fine-grained RBAC with three permission levels:
+
+1. **Manager Role** (`kubelb`): Full cluster-wide permissions for the KubeLB manager
+2. **Tenant Role** (`kubelb-ccm`): Namespace-scoped permissions for CCM components
+3. **User Roles**: Separate viewer and editor roles for end users
+
+See the [Tenant Isolation](/security/tenant-isolation) page for detailed RBAC configuration.
+
+### Secure Kubeconfig Generation
+
+Tenant kubeconfigs are automatically generated with:
+
+- Namespace-scoped service account tokens
+- CA certificate for TLS verification
+- Server URL dynamically discovered from cluster endpoints
+- Stored as secrets in the tenant namespace
+
+Reference: `internal/controllers/kubelb/tenant_controller.go:246`
+
+### Finalizers for Cleanup
+
+All critical resources use finalizers (`kubelb.k8c.io/lb-finalizer`) to ensure:
+
+- Proper cleanup of dependent resources
+- Prevention of orphaned secrets or configurations
+- Ordered deletion during tenant removal
+
+## Vulnerability Management
+
+### Automated Scanning
+
+<Info>
+All pull requests are scanned for vulnerabilities before merge. Container images are scanned with Trivy at release time.
+</Info>
+
+### Dependency Updates
+
+Dependabot monitors dependencies and automatically creates pull requests for security updates.
+
+### Security Releases
+
+Security patches are released according to the following timeline:
+
+| Version | Support Status |
+|---------|----------------|
+| Latest stable | Fully supported |
+| Previous minor (n-1) | Supported for 3 months after new release |
+| Older versions | Not supported |
+
+## Artifact Verification
+
+Verify KubeLB artifacts before deployment using Cosign:
+
+```bash
+# Verify container image
+cosign verify quay.io/kubermatic/kubelb-manager:v1.3.0 \
+  --certificate-identity-regexp="^https://github.com/kubermatic/kubelb/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+
+# Verify Helm chart
+cosign verify quay.io/kubermatic/helm-charts/kubelb-manager:v1.3.0 \
+  --certificate-identity-regexp="^https://github.com/kubermatic/kubelb/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+```
+
+<Warning>
+Always verify artifact signatures before deploying to production environments.
+</Warning>
+
+## Reporting Security Vulnerabilities
+
+If you discover a security vulnerability in KubeLB:
+
+**Email**: security@kubermatic.com
+
+**Include**:
+- Description and potential impact
+- Steps to reproduce
+- Affected versions
+- Suggested remediation (if any)
+
+**Response Timeline**:
+- Acknowledgment within 48 hours
+- Initial assessment within 7 days
+- Regular updates on remediation progress
+
+<Note>
+We follow coordinated disclosure practices. Please do not disclose vulnerabilities publicly until we have released a fix.
+</Note>
+
+## Best Practices
+
+1. **Regular Updates**: Keep KubeLB updated to the latest stable version
+2. **Verify Signatures**: Always verify artifact signatures before deployment
+3. **Least Privilege**: Use viewer roles for read-only access, editor roles only when needed
+4. **Monitor Access**: Regularly audit service account usage and permissions
+5. **Secure Secrets**: Use SyncSecret for controlled secret propagation, avoid storing secrets in plain text
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Tenant Isolation" icon="shield-halved" href="/security/tenant-isolation">
+    Learn about namespace separation and RBAC policies
+  </Card>
+  <Card title="Secret Management" icon="key" href="/security/secret-management">
+    Understand secure secret propagation with SyncSecret
+  </Card>
+</CardGroup>

@@ -1,97 +1,337 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: KubeLB Documentation
+mode: custom
 ---
 
-## Setting up
+<div className="relative overflow-hidden bg-gradient-to-br from-[#f5e6de] to-[#8c7c7c] dark:from-[#1a1d27] dark:to-[#0f1117] py-20">
+  <div className="max-w-7xl mx-auto px-6 lg:px-8">
+    <div className="lg:grid lg:grid-cols-12 lg:gap-8 items-center">
+      <div className="lg:col-span-7">
+        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-gray-900 dark:text-gray-100 mb-6">
+          Centralized load balancing for Kubernetes
+        </h1>
+        <p className="text-lg sm:text-xl text-gray-700 dark:text-gray-300 max-w-2xl mb-8">
+          Manage Layer 4 and Layer 7 load balancers across multi-cloud and on-premise Kubernetes clusters with a unified control plane.
+        </p>
+        <div className="flex flex-wrap gap-4">
+          <a 
+            href="/quickstart" 
+            className="inline-flex items-center px-6 py-3 rounded-lg bg-[#6ca64c] text-white font-semibold hover:bg-[#5a8d3f] transition-colors"
+          >
+            Get started
+          </a>
+          <a 
+            href="/architecture" 
+            className="inline-flex items-center px-6 py-3 rounded-lg border border-gray-900/30 dark:border-white/30 bg-white/10 dark:bg-white/10 text-gray-900 dark:text-white font-semibold hover:bg-white/20 dark:hover:bg-white/20 transition-colors"
+          >
+            Learn architecture
+          </a>
+        </div>
+      </div>
+      <div className="hidden lg:block lg:col-span-5">
+        <div className="relative">
+          <img 
+            src="https://media.brand.dev/47da1ba6-c5e6-47f9-9673-c49d1c75d86d.png" 
+            alt="KubeLB architecture diagram showing hub-and-spoke model"
+            noZoom
+            className="w-full h-auto max-w-md mx-auto"
+          />
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
-Get your documentation site up and running in minutes.
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Why KubeLB?
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
+      Traditional load balancer solutions require separate configuration for each cluster. KubeLB provides a centralized hub-and-spoke architecture for managing load balancers across your entire Kubernetes fleet.
+    </p>
+  </div>
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
+    <div className="p-6 rounded-2xl border border-gray-200 dark:border-[#27272a] bg-white dark:bg-[#1a1d27] hover:border-[#f5e6de] dark:hover:border-[#f5e6de] transition-colors">
+      <div className="w-12 h-12 rounded-lg bg-[#6ca64c]/10 dark:bg-[#6ca64c]/20 flex items-center justify-center mb-4">
+        <svg className="w-6 h-6 text-[#6ca64c]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+      </div>
+      <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-2">
+        Multi-cluster management
+      </h3>
+      <p className="text-sm text-gray-600 dark:text-gray-400">
+        Manage load balancers for multiple Kubernetes clusters from a single control plane with tenant isolation.
+      </p>
+    </div>
 
-## Make it yours
+    <div className="p-6 rounded-2xl border border-gray-200 dark:border-[#27272a] bg-white dark:bg-[#1a1d27] hover:border-[#f5e6de] dark:hover:border-[#f5e6de] transition-colors">
+      <div className="w-12 h-12 rounded-lg bg-[#6ca64c]/10 dark:bg-[#6ca64c]/20 flex items-center justify-center mb-4">
+        <svg className="w-6 h-6 text-[#6ca64c]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+        </svg>
+      </div>
+      <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-2">
+        Envoy-powered routing
+      </h3>
+      <p className="text-sm text-gray-600 dark:text-gray-400">
+        Built on Envoy Proxy with xDS control plane for high-performance Layer 4 and Layer 7 load balancing.
+      </p>
+    </div>
 
-Design a docs site that looks great and empowers your users.
+    <div className="p-6 rounded-2xl border border-gray-200 dark:border-[#27272a] bg-white dark:bg-[#1a1d27] hover:border-[#f5e6de] dark:hover:border-[#f5e6de] transition-colors">
+      <div className="w-12 h-12 rounded-lg bg-[#6ca64c]/10 dark:bg-[#6ca64c]/20 flex items-center justify-center mb-4">
+        <svg className="w-6 h-6 text-[#6ca64c]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" />
+        </svg>
+      </div>
+      <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-2">
+        Multi-cloud support
+      </h3>
+      <p className="text-sm text-gray-600 dark:text-gray-400">
+        Works across any cloud provider or on-premise environment with support for MetalLB and cloud load balancers.
+      </p>
+    </div>
+  </div>
+</div>
 
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
-  </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
-  </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
-  </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
-  </Card>
-</Columns>
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Quick start
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
+      Get KubeLB running in your environment in minutes
+    </p>
+  </div>
 
-## Create beautiful pages
+  <Steps>
+    <Step title="Install prerequisites">
+      Ensure you have a management cluster with LoadBalancer support (cloud provider or MetalLB) and network access to tenant cluster nodes.
 
-Everything you need to create world-class documentation.
+      <Accordion title="Verify LoadBalancer support">
+        ```bash
+        kubectl get svc -A | grep LoadBalancer
+        ```
+        
+        You should see at least one service with an external IP assigned.
+      </Accordion>
+    </Step>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+    <Step title="Deploy KubeLB Manager">
+      Install the KubeLB Manager in your management cluster using Helm:
 
-## Need inspiration?
+      ```bash
+      helm pull oci://quay.io/kubermatic/helm-charts/kubelb-manager --version=v1.3.1 --untardir "." --untar
+      kubectl apply -f kubelb-manager/crds/
+      helm install kubelb-manager kubelb-manager/ --namespace kubelb --create-namespace
+      ```
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+      The manager hosts the Envoy xDS control plane and receives load balancer configurations from tenant clusters.
+    </Step>
+
+    <Step title="Deploy KubeLB CCM to tenant clusters">
+      Install the Cloud Controller Manager in each tenant cluster:
+
+      ```bash
+      helm pull oci://quay.io/kubermatic/helm-charts/kubelb-ccm --version=v1.3.1 --untardir "." --untar
+      helm install kubelb-ccm kubelb-ccm/ \
+        --namespace kubelb \
+        --create-namespace \
+        --set clusterName=tenant-cluster-1 \
+        --set kubeLbKubeconf=/path/to/management-kubeconfig
+      ```
+
+      The CCM watches Services, Ingresses, and Gateway API resources, propagating configurations to the manager.
+    </Step>
+
+    <Step title="Create your first load balancer">
+      Create a LoadBalancer Service in your tenant cluster:
+
+      ```yaml
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: my-app
+        namespace: default
+      spec:
+        type: LoadBalancer
+        ports:
+          - port: 80
+            targetPort: 8080
+        selector:
+          app: my-app
+      ```
+
+      KubeLB will automatically provision a load balancer in the management cluster and route traffic to your tenant cluster.
+
+      <Accordion title="Verify load balancer status">
+        ```bash
+        kubectl get svc my-app -n default
+        ```
+        
+        You should see an external IP assigned to your service within a few seconds.
+      </Accordion>
+    </Step>
+  </Steps>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Explore by topic
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
+      Learn how to use KubeLB for different scenarios
+    </p>
+  </div>
+
+  <CardGroup cols={2}>
+    <Card 
+      title="Layer 4 load balancing" 
+      icon="network-wired" 
+      href="/guides/layer4-services"
+    >
+      Configure TCP and UDP load balancing for Kubernetes Services with node port routing.
+    </Card>
+    <Card 
+      title="Layer 7 routing" 
+      icon="route" 
+      href="/guides/layer7-routing"
+    >
+      Set up HTTP and gRPC routing with Ingress and Gateway API support.
+    </Card>
+    <Card 
+      title="Multi-cluster management" 
+      icon="sitemap" 
+      href="/guides/multi-cluster"
+    >
+      Manage load balancers across multiple tenant clusters with centralized control.
+    </Card>
+    <Card 
+      title="DNS and certificates" 
+      icon="certificate" 
+      href="/guides/dns-certificates"
+    >
+      Automate DNS record creation and TLS certificate management for your services.
+    </Card>
+    <Card 
+      title="Monitoring and metrics" 
+      icon="chart-line" 
+      href="/operations/monitoring"
+    >
+      Monitor your load balancers with Prometheus metrics and Grafana dashboards.
+    </Card>
+    <Card 
+      title="Security and isolation" 
+      icon="shield-halved" 
+      href="/security/overview"
+    >
+      Learn about tenant isolation, RBAC, and secret management in KubeLB.
+    </Card>
+  </CardGroup>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      API reference
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
+      Explore the Custom Resource Definitions that power KubeLB
+    </p>
+  </div>
+
+  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <a 
+      href="/api/loadbalancer"
+      className="group block p-6 rounded-2xl border border-gray-200 dark:border-[#27272a] bg-white dark:bg-[#1a1d27] hover:border-[#f5e6de] dark:hover:border-[#f5e6de] transition-colors no-underline"
+    >
+      <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-2">LoadBalancer</h3>
+      <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+        Configure Layer 4 load balancing with node port endpoints and service ports.
+      </p>
+      <span className="text-sm text-[#6ca64c] group-hover:text-[#5a8d3f] inline-flex items-center">
+        View API reference
+        <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+      </span>
+    </a>
+
+    <a 
+      href="/api/route"
+      className="group block p-6 rounded-2xl border border-gray-200 dark:border-[#27272a] bg-white dark:bg-[#1a1d27] hover:border-[#f5e6de] dark:hover:border-[#f5e6de] transition-colors no-underline"
+    >
+      <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Route</h3>
+      <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+        Define Layer 7 routing from Ingress, HTTPRoute, and GRPCRoute resources.
+      </p>
+      <span className="text-sm text-[#6ca64c] group-hover:text-[#5a8d3f] inline-flex items-center">
+        View API reference
+        <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+      </span>
+    </a>
+
+    <a 
+      href="/api/tenant"
+      className="group block p-6 rounded-2xl border border-gray-200 dark:border-[#27272a] bg-white dark:bg-[#1a1d27] hover:border-[#f5e6de] dark:hover:border-[#f5e6de] transition-colors no-underline"
+    >
+      <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Tenant</h3>
+      <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+        Configure tenant-specific settings for load balancing, ingress, and Gateway API.
+      </p>
+      <span className="text-sm text-[#6ca64c] group-hover:text-[#5a8d3f] inline-flex items-center">
+        View API reference
+        <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+      </span>
+    </a>
+
+    <a 
+      href="/api/config"
+      className="group block p-6 rounded-2xl border border-gray-200 dark:border-[#27272a] bg-white dark:bg-[#1a1d27] hover:border-[#f5e6de] dark:hover:border-[#f5e6de] transition-colors no-underline"
+    >
+      <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-2">Config</h3>
+      <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+        Global configuration for the KubeLB Manager including Envoy proxy topology.
+      </p>
+      <span className="text-sm text-[#6ca64c] group-hover:text-[#5a8d3f] inline-flex items-center">
+        View API reference
+        <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+      </span>
+    </a>
+  </div>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="p-8 rounded-2xl border border-gray-200 dark:border-[#27272a] bg-gradient-to-br from-gray-50 to-white dark:from-[#1a1d27] dark:to-[#0f1117] text-center">
+    <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Ready to get started?
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400 max-w-2xl mx-auto mb-6">
+      Install KubeLB in your Kubernetes clusters and start managing load balancers centrally.
+    </p>
+    <div className="flex flex-wrap justify-center gap-4">
+      <a 
+        href="/quickstart" 
+        className="inline-flex items-center px-6 py-3 rounded-lg bg-[#6ca64c] text-white font-semibold hover:bg-[#5a8d3f] transition-colors"
+      >
+        Get started
+      </a>
+      <a 
+        href="https://github.com/kubermatic/kubelb" 
+        className="inline-flex items-center px-6 py-3 rounded-lg border border-gray-900/30 dark:border-white/30 bg-white/10 dark:bg-white/10 text-gray-900 dark:text-white font-semibold hover:bg-white/20 dark:hover:bg-white/20 transition-colors"
+      >
+        View on GitHub
+      </a>
+    </div>
+  </div>
+</div>

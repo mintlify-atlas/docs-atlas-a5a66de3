@@ -1,0 +1,371 @@
+---
+title: Layer 4 LoadBalancer Services
+description: Creating and managing LoadBalancer Services with TCP/UDP routing
+---
+
+KubeLB provides Layer 4 load balancing for Kubernetes Services of type `LoadBalancer`. When you create a LoadBalancer Service in your tenant cluster, KubeLB CCM automatically propagates it to the KubeLB management cluster, which provisions the external load balancer.
+
+## How It Works
+
+The Layer 4 load balancing flow works as follows:
+
+1. **Service Creation**: You create a Service with `type: LoadBalancer` in your tenant cluster
+2. **CCM Propagation**: KubeLB CCM watches the Service and creates a corresponding `LoadBalancer` CRD in the management cluster
+3. **Load Balancer Provisioning**: KubeLB Manager provisions the load balancer and assigns an external IP
+4. **Status Sync**: The external IP is synced back to the Service status in your tenant cluster
+5. **Traffic Routing**: Traffic flows through the load balancer to your cluster nodes via NodePort
+
+<Note>
+KubeLB uses NodePort services internally to route traffic from the management cluster to your tenant cluster.
+</Note>
+
+## Creating a Basic LoadBalancer Service
+
+<Steps>
+  <Step title="Create a Deployment">
+    First, create a simple application deployment:
+
+    ```yaml
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: echo-server
+      namespace: default
+    spec:
+      replicas: 2
+      selector:
+        matchLabels:
+          app: echo-server
+      template:
+        metadata:
+          labels:
+            app: echo-server
+        spec:
+          containers:
+          - name: echo
+            image: ealen/echo-server:latest
+            ports:
+            - containerPort: 80
+            env:
+            - name: PORT
+              value: "80"
+    ```
+  </Step>
+
+  <Step title="Create a LoadBalancer Service">
+    Create a Service to expose your application:
+
+    ```yaml
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: echo-server
+      namespace: default
+    spec:
+      type: LoadBalancer
+      selector:
+        app: echo-server
+      ports:
+      - port: 80
+        targetPort: 80
+        protocol: TCP
+    ```
+
+    Apply the manifest:
+    ```bash
+    kubectl apply -f service.yaml
+    ```
+  </Step>
+
+  <Step title="Wait for External IP">
+    Check the Service status to get the external IP:
+
+    ```bash
+    kubectl get service echo-server
+    ```
+
+    You should see output like:
+    ```
+    NAME          TYPE           CLUSTER-IP     EXTERNAL-IP    PORT(S)        AGE
+    echo-server   LoadBalancer   10.96.10.123   203.0.113.10   80:31234/TCP   30s
+    ```
+  </Step>
+
+  <Step title="Test Connectivity">
+    Once the external IP is assigned, test connectivity:
+
+    ```bash
+    curl http://203.0.113.10
+    ```
+  </Step>
+</Steps>
+
+## Using LoadBalancer Class
+
+If your cluster has multiple load balancer implementations, specify the KubeLB class:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-server
+  namespace: default
+spec:
+  type: LoadBalancer
+  loadBalancerClass: kubelb  # Specify KubeLB as the load balancer
+  selector:
+    app: echo-server
+  ports:
+  - port: 80
+    targetPort: 80
+```
+
+<Warning>
+The `loadBalancerClass` field is required if your CCM is configured with `--use-loadbalancer-class=true`.
+</Warning>
+
+## Multi-Port Services
+
+KubeLB supports services with multiple ports:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: multi-port-service
+  namespace: default
+spec:
+  type: LoadBalancer
+  selector:
+    app: my-app
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+  - name: https
+    port: 443
+    targetPort: 8443
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+```
+
+All ports will be exposed on the same external IP address.
+
+## UDP Services
+
+KubeLB supports UDP protocol for services like DNS or game servers:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: dns-server
+  namespace: default
+spec:
+  type: LoadBalancer
+  selector:
+    app: dns-server
+  ports:
+  - name: dns-udp
+    port: 53
+    targetPort: 53
+    protocol: UDP
+  - name: dns-tcp
+    port: 53
+    targetPort: 53
+    protocol: TCP
+```
+
+## External Traffic Policy
+
+Control how external traffic is routed to your pods:
+
+<Tabs>
+  <Tab title="Cluster (Default)">
+    Traffic is distributed across all nodes in the cluster:
+
+    ```yaml
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: echo-server
+    spec:
+      type: LoadBalancer
+      externalTrafficPolicy: Cluster  # Default
+      selector:
+        app: echo-server
+      ports:
+      - port: 80
+        targetPort: 80
+    ```
+
+    **Pros:**
+    - Better load distribution
+    - Works with any number of nodes
+
+    **Cons:**
+    - Client source IP is obscured
+    - Additional network hop possible
+  </Tab>
+
+  <Tab title="Local">
+    Traffic is only routed to pods on the same node:
+
+    ```yaml
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: echo-server
+    spec:
+      type: LoadBalancer
+      externalTrafficPolicy: Local  # Preserve source IP
+      selector:
+        app: echo-server
+      ports:
+      - port: 80
+        targetPort: 80
+    ```
+
+    **Pros:**
+    - Preserves client source IP
+    - No additional network hop
+
+    **Cons:**
+    - May cause imbalanced traffic distribution
+    - Requires pods on multiple nodes for HA
+  </Tab>
+</Tabs>
+
+## Understanding the LoadBalancer CRD
+
+When you create a LoadBalancer Service, KubeLB creates a corresponding CRD in the management cluster:
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: LoadBalancer
+metadata:
+  name: <service-uid>
+  namespace: <tenant-name>
+  labels:
+    kubelb.k8c.io/origin-name: echo-server
+    kubelb.k8c.io/origin-ns: default
+  finalizers:
+  - kubelb.k8c.io/cleanup
+spec:
+  type: LoadBalancer
+  endpoints:
+  - addressesReference:
+      kind: Addresses
+      name: default
+      namespace: <tenant-name>
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+status:
+  loadBalancer:
+    ingress:
+    - ip: 203.0.113.10
+```
+
+### Key Fields
+
+- **metadata.name**: Set to the Service UID for uniqueness
+- **metadata.labels**: Tracks the original Service name and namespace
+- **spec.endpoints**: References the Addresses resource containing node IPs/endpoints
+- **spec.ports**: The ports exposed by the load balancer
+- **status.loadBalancer**: Contains the assigned external IP
+
+## Verifying Load Balancer Status
+
+From your tenant cluster:
+
+```bash
+# Check Service status
+kubectl get service echo-server -o yaml
+
+# Check events
+kubectl describe service echo-server
+```
+
+From the management cluster:
+
+```bash
+# Check LoadBalancer CRD
+kubectl get loadbalancers -n <tenant-namespace>
+
+# Get details
+kubectl describe loadbalancer <lb-name> -n <tenant-namespace>
+```
+
+## Cleanup
+
+Deleting the Service automatically cleans up the LoadBalancer CRD:
+
+```bash
+kubectl delete service echo-server
+```
+
+KubeLB uses finalizers to ensure proper cleanup of all resources.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Service stuck without external IP">
+    **Check CCM logs:**
+    ```bash
+    kubectl logs -n kubelb -l app.kubernetes.io/name=kubelb-ccm
+    ```
+
+    **Check LoadBalancer CRD in management cluster:**
+    ```bash
+    kubectl get loadbalancers -A
+    ```
+
+    **Common causes:**
+    - CCM not running or misconfigured
+    - Network connectivity issues between clusters
+    - LoadBalancer class mismatch
+  </Accordion>
+
+  <Accordion title="Cannot reach service via external IP">
+    **Verify the external IP is assigned:**
+    ```bash
+    kubectl get svc echo-server -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+    ```
+
+    **Test from within the cluster:**
+    ```bash
+    kubectl run -it --rm debug --image=curlimages/curl --restart=Never -- curl http://<external-ip>
+    ```
+
+    **Check node endpoints:**
+    - Ensure nodes are accessible from the management cluster
+    - Verify NodePort service is created
+  </Accordion>
+
+  <Accordion title="LoadBalancer CRD not created">
+    **Check if service should be reconciled:**
+    - Verify `type: LoadBalancer`
+    - Check if `loadBalancerClass` is set correctly (if required)
+
+    **Check CCM configuration:**
+    ```bash
+    kubectl get deployment -n kubelb kubelb-ccm -o yaml
+    ```
+
+    Look for flags:
+    - `--use-loadbalancer-class`
+    - `--cluster-name`
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+- Learn about [Layer 7 HTTP/gRPC routing](/guides/layer7-routing)
+- Configure [multi-cluster management](/guides/multi-cluster)
+- Set up [DNS automation](/guides/dns-certificates)

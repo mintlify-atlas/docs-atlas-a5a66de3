@@ -1,0 +1,332 @@
+---
+title: Architecture
+description: Understand KubeLB's code organization, controller patterns, and development standards
+icon: sitemap
+---
+
+This guide explains KubeLB's codebase structure, architectural patterns, and coding conventions.
+
+## High-Level Architecture
+
+KubeLB uses a **hub-and-spoke model** with three main components:
+
+```
+┌─────────────────────────────────────────────┐
+│         Management Cluster (Hub)            │
+│  ┌─────────────────────────────────────┐  │
+│  │     KubeLB Manager                   │  │
+│  │  - Envoy xDS Control Plane          │  │
+│  │  - LoadBalancer CRD Controllers     │  │
+│  │  - Route Controllers                │  │
+│  └─────────────────────────────────────┘  │
+└─────────────────────────────────────────────┘
+              ↑                    ↑
+              │                    │
+    ┌─────────┘                    └─────────┐
+    │                                        │
+┌───┴────────────┐                  ┌───────┴──────┐
+│ Tenant Cluster │                  │ Tenant Cluster│
+│   KubeLB CCM   │                  │   KubeLB CCM  │
+│  - Service     │                  │  - Ingress    │
+│  - Ingress     │                  │  - Gateway    │
+│  - Gateway API │                  │  - Nodes      │
+└────────────────┘                  └───────────────┘
+```
+
+### Component Roles
+
+1. **KubeLB Manager** (`cmd/kubelb/`)
+   - Runs in the management cluster
+   - Hosts the Envoy xDS control plane
+   - Receives LoadBalancer and Route configurations from tenant CCMs
+   - Manages Envoy proxy deployments for traffic routing
+
+2. **KubeLB CCM** (`cmd/ccm/`)
+   - Runs in tenant clusters
+   - Watches Services, Ingresses, Gateway API resources
+   - Propagates configurations as LoadBalancer and Route CRDs to the management cluster
+   - Reports node status and endpoints
+
+## Directory Structure
+
+```
+kubelb/
+├── api/                          # API definitions
+│   ├── ce/kubelb.k8c.io/v1alpha1/  # Community Edition CRDs
+│   └── ee/kubelb.k8c.io/v1alpha1/  # Enterprise Edition CRDs
+├── cmd/
+│   ├── kubelb/                   # Manager entrypoint
+│   └── ccm/                      # CCM entrypoint
+├── internal/
+│   ├── controllers/
+│   │   ├── kubelb/               # Manager controllers
+│   │   │   ├── loadbalancer_controller.go
+│   │   │   ├── route_controller.go
+│   │   │   ├── envoy_cp_controller.go
+│   │   │   ├── tenant_controller.go
+│   │   │   └── sync_secret_controller.go
+│   │   └── ccm/                  # CCM controllers
+│   │       ├── service_controller.go
+│   │       ├── ingress_controller.go
+│   │       ├── gateway_httproute_controller.go
+│   │       ├── gateway_grpcroute_controller.go
+│   │       ├── node_controller.go
+│   │       └── sync_secret_controller.go
+│   ├── metrics/                  # Prometheus metrics
+│   ├── resources/                # Resource generation helpers
+│   └── versioninfo/              # Version information
+├── charts/                       # Helm charts
+│   ├── kubelb-manager/
+│   ├── kubelb-ccm/
+│   └── kubelb-addons/
+├── config/                       # Kustomize configurations
+├── test/e2e/                     # E2E tests with Chainsaw
+└── hack/                         # Build and release scripts
+```
+
+## API Resources
+
+KubeLB defines several Custom Resource Definitions (CRDs):
+
+### Core Resources (api/ce/kubelb.k8c.io/v1alpha1/)
+
+<AccordionGroup>
+  <Accordion title="LoadBalancer" icon="balance-scale">
+    Represents a Layer 4 load balancer configuration for a Service.
+    
+    **Controller**: `internal/controllers/kubelb/loadbalancer_controller.go`
+    
+    **Key Fields**:
+    - `spec.endpoints`: Backend endpoints (node IPs and ports)
+    - `spec.ports`: Port mappings for the service
+    - `spec.type`: LoadBalancer type configuration
+  </Accordion>
+
+  <Accordion title="Route" icon="route">
+    Represents Layer 7 routing configuration for Ingress or Gateway API resources.
+    
+    **Controller**: `internal/controllers/kubelb/route_controller.go`
+    
+    **Key Fields**:
+    - `spec.endpoints`: Backend endpoints
+    - `spec.routes`: HTTP/GRPC route rules
+    - `spec.tls`: TLS configuration
+  </Accordion>
+
+  <Accordion title="Tenant" icon="users">
+    Cluster-scoped resource defining a tenant cluster and its configuration.
+    
+    **Controller**: `internal/controllers/kubelb/tenant_controller.go`
+    
+    **Key Fields**:
+    - `spec.ingress`: Ingress controller settings
+    - `spec.loadBalancer`: LoadBalancer settings
+  </Accordion>
+
+  <Accordion title="Config" icon="gear">
+    Cluster-scoped resource for global KubeLB settings.
+    
+    **Key Fields**:
+    - `spec.envoyProxy`: Envoy proxy configuration
+    - `spec.propagateAllAnnotations`: Annotation propagation rules
+  </Accordion>
+
+  <Accordion title="SyncSecret" icon="key">
+    Propagates secrets from tenant clusters to the management cluster.
+    
+    **Controllers**: 
+    - CCM: `internal/controllers/ccm/sync_secret_controller.go`
+    - Manager: `internal/controllers/kubelb/sync_secret_controller.go`
+  </Accordion>
+</AccordionGroup>
+
+## Traffic Flow
+
+### Layer 4 (LoadBalancer Service)
+
+```
+Client
+  ↓
+LoadBalancer Service (MetalLB/Cloud LB)
+  ↓
+KubeLB Envoy Proxy (in management cluster)
+  ↓
+Tenant Cluster Node:NodePort
+  ↓
+Backend Pod
+```
+
+### Layer 7 (Ingress/HTTPRoute)
+
+```
+Client
+  ↓
+Envoy Gateway LB / Ingress LB
+  ↓
+Envoy Gateway Service
+  ↓
+KubeLB Envoy Proxy (talks to xDS server)
+  ↓
+Tenant Cluster Node:NodePort
+  ↓
+Backend Pod
+```
+
+## Controller Patterns
+
+KubeLB uses [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime) with standard Kubernetes controller patterns.
+
+### Reconciler Pattern
+
+All controllers implement the `Reconcile` method:
+
+```go
+func (r *LoadBalancerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+    // 1. Fetch the resource
+    lb := &kubelbv1alpha1.LoadBalancer{}
+    if err := r.Get(ctx, req.NamespacedName, lb); err != nil {
+        return ctrl.Result{}, client.IgnoreNotFound(err)
+    }
+
+    // 2. Handle deletion (finalizers)
+    if !lb.DeletionTimestamp.IsZero() {
+        return r.handleDeletion(ctx, lb)
+    }
+
+    // 3. Add finalizer if missing
+    if !controllerutil.ContainsFinalizer(lb, finalizerName) {
+        controllerutil.AddFinalizer(lb, finalizerName)
+        return ctrl.Result{}, r.Update(ctx, lb)
+    }
+
+    // 4. Reconcile the desired state
+    return r.reconcile(ctx, lb)
+}
+```
+
+### Finalizers
+
+Controllers use finalizers to ensure proper cleanup:
+
+```go
+const finalizerName = "kubelb.k8c.io/lb-finalizer"
+```
+
+Finalizers prevent resource deletion until cleanup is complete.
+
+### Metrics
+
+Controllers export Prometheus metrics for observability:
+
+```go
+// Register metrics in internal/metrics/
+kubelbManagerReconciliations = prometheus.NewCounterVec(
+    prometheus.CounterOpts{
+        Subsystem: "kubelb_manager",
+        Name:      "reconciliations_total",
+    },
+    []string{"controller", "result"},
+)
+```
+
+Metric naming conventions:
+- Manager: `kubelb_manager_*`
+- CCM: `kubelb_ccm_*`
+
+### Structured Logging
+
+Use [logr](https://github.com/go-logr/logr) with verbosity levels:
+
+```go
+log := ctrl.LoggerFrom(ctx)
+log.Info("Reconciling LoadBalancer", "name", lb.Name)
+log.V(1).Info("Debug details", "endpoints", lb.Spec.Endpoints)
+log.Error(err, "Failed to update status")
+```
+
+Verbosity levels:
+- `V(0)`: Default - important events
+- `V(1)`: Debug - detailed flow
+- `V(2)`: Trace - verbose debugging
+
+## Import Order
+
+KubeLB enforces strict import ordering via `.gimps.yaml`:
+
+```yaml
+importOrder: [std, external, kubermatic, envoy, kubernetes]
+sets:
+  - name: kubermatic
+    patterns:
+      - "k8c.io/**"
+      - "github.com/kubermatic/**"
+  - name: envoy
+    patterns:
+      - "github.com/envoyproxy/**"
+  - name: kubernetes
+    patterns:
+      - "k8s.io/**"
+      - "*.k8s.io/**"
+```
+
+**Order**:
+1. Standard library (`fmt`, `context`, etc.)
+2. External packages (`github.com/pkg/errors`)
+3. Kubermatic packages (`k8c.io/kubelb`, `github.com/kubermatic/**`)
+4. Envoy packages (`github.com/envoyproxy/**`)
+5. Kubernetes packages (`k8s.io/**`, `sigs.k8s.io/**`)
+
+Verify import order:
+```bash
+make verify-imports
+```
+
+## Error Handling
+
+Use [github.com/pkg/errors](https://github.com/pkg/errors) for error wrapping:
+
+```go
+import "github.com/pkg/errors"
+
+if err != nil {
+    return ctrl.Result{}, errors.Wrap(err, "failed to create service")
+}
+```
+
+## Copyright Headers
+
+All new files must include the Apache 2.0 license header with the current year:
+
+```go
+/*
+Copyright 2026 The KubeLB Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+```
+
+Verify boilerplate:
+```bash
+make verify-boilerplate
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Testing" icon="flask" href="/contributing/testing">
+    Learn how to write and run tests
+  </Card>
+  <Card title="Code Generation" icon="code" href="/contributing/code-generation">
+    Understand CRD and RBAC generation
+  </Card>
+</CardGroup>

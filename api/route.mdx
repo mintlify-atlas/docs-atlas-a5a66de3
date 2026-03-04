@@ -1,0 +1,354 @@
+---
+title: Route
+description: API reference for the Route Custom Resource Definition
+---
+
+The Route resource represents Layer 7 routing for Ingress and Gateway API resources. It contains information about the source resources and the endpoints that traffic should be routed to.
+
+## API Version
+
+`kubelb.k8c.io/v1alpha1`
+
+## Spec Fields
+
+<ParamField path="endpoints" type="[]LoadBalancerEndpoints" required>
+  Sets of addresses and ports that comprise an exposed user service on a cluster.
+  
+  Minimum items: 1
+</ParamField>
+
+<ParamField path="endpoints[].name" type="string">
+  Name of the endpoint group.
+</ParamField>
+
+<ParamField path="endpoints[].addresses" type="[]EndpointAddress">
+  IP addresses which offer the related ports that are marked as ready. These endpoints should be considered safe for load balancers and clients to utilize.
+  
+  Minimum items: 1. Ignored if `addressesReference` is set.
+</ParamField>
+
+<ParamField path="endpoints[].addresses[].ip" type="string" required>
+  The IP of the endpoint. This can be an IPv4 or IPv6 address. The IP address must not be IP CIDR, Loopback (127.0.0.0/8), link-local (169.254.0.0/16), or link-local multicast (224.0.0.0/24) addresses.
+</ParamField>
+
+<ParamField path="endpoints[].addresses[].hostname" type="string">
+  The hostname of this endpoint.
+</ParamField>
+
+<ParamField path="endpoints[].addressesReference" type="ObjectReference">
+  Reference to an Addresses object that contains the IP addresses. If this field is set, the `addresses` field will be ignored.
+</ParamField>
+
+<ParamField path="endpoints[].ports" type="[]EndpointPort">
+  Port numbers available on the related IP addresses. This field is ignored for routes that are using kubernetes resources as the source.
+  
+  Minimum items: 1
+</ParamField>
+
+<ParamField path="endpoints[].ports[].name" type="string">
+  The name of this port. Must be a DNS_LABEL. Optional only if one port is defined.
+</ParamField>
+
+<ParamField path="endpoints[].ports[].port" type="int32" required>
+  The port number of the endpoint.
+</ParamField>
+
+<ParamField path="endpoints[].ports[].protocol" type="Protocol">
+  The IP protocol for this port. Defaults to "TCP".
+  
+  Allowed values: `TCP`, `UDP`
+</ParamField>
+
+<ParamField path="source" type="RouteSource">
+  Contains information about the source of the route. This is used when the route is created from external sources.
+</ParamField>
+
+<ParamField path="source.kubernetes" type="KubernetesSource">
+  Contains information about the Kubernetes source. This field is automatically populated by the KubeLB CCM and in most cases, users should not set this field manually.
+</ParamField>
+
+<ParamField path="source.kubernetes.resource" type="Unstructured">
+  The resource that is used as the source for the Route.
+  
+  Allowed resources:
+  - `networking.k8s.io/Ingress`
+  - `gateway.networking.k8s.io/Gateway`
+  - `gateway.networking.k8s.io/HTTPRoute`
+  - `gateway.networking.k8s.io/GRPCRoute`
+</ParamField>
+
+<ParamField path="source.kubernetes.services" type="[]Service">
+  List of services that are used as the source for the Route. These are the upstream services that the route forwards traffic to.
+</ParamField>
+
+## Status Fields
+
+<ResponseField name="resources" type="RouteResourcesStatus">
+  Contains the list of resources that are created/processed as a result of the Route.
+</ResponseField>
+
+<ResponseField name="resources.source" type="string">
+  Source resource identifier.
+</ResponseField>
+
+<ResponseField name="resources.services" type="map[string]RouteServiceStatus">
+  Map of service statuses keyed by service name.
+</ResponseField>
+
+<ResponseField name="resources.services[*].apiVersion" type="string">
+  API version of the service resource.
+</ResponseField>
+
+<ResponseField name="resources.services[*].kind" type="string">
+  Kind of the service resource.
+</ResponseField>
+
+<ResponseField name="resources.services[*].name" type="string">
+  Name of the service resource.
+</ResponseField>
+
+<ResponseField name="resources.services[*].namespace" type="string">
+  Namespace of the service resource.
+</ResponseField>
+
+<ResponseField name="resources.services[*].generatedName" type="string">
+  Generated name of the service resource.
+</ResponseField>
+
+<ResponseField name="resources.services[*].ports" type="[]ServicePort">
+  List of service ports.
+</ResponseField>
+
+<ResponseField name="resources.services[*].status" type="RawExtension">
+  Actual status of the service resource.
+</ResponseField>
+
+<ResponseField name="resources.services[*].conditions" type="[]Condition">
+  Conditions of the service resource.
+</ResponseField>
+
+<ResponseField name="resources.route" type="ResourceState">
+  State of the route resource.
+</ResponseField>
+
+<ResponseField name="resources.route.apiVersion" type="string">
+  API version of the route resource.
+</ResponseField>
+
+<ResponseField name="resources.route.kind" type="string">
+  Kind of the route resource.
+</ResponseField>
+
+<ResponseField name="resources.route.name" type="string">
+  Name of the route resource.
+</ResponseField>
+
+<ResponseField name="resources.route.namespace" type="string">
+  Namespace of the route resource.
+</ResponseField>
+
+<ResponseField name="resources.route.generatedName" type="string">
+  Generated name of the route resource.
+</ResponseField>
+
+<ResponseField name="resources.route.status" type="RawExtension">
+  Actual status of the route resource.
+</ResponseField>
+
+<ResponseField name="resources.route.conditions" type="[]Condition">
+  Conditions of the route resource.
+</ResponseField>
+
+## Example
+
+### Route from Ingress
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Route
+metadata:
+  name: example-route-ingress
+  namespace: default
+  labels:
+    kubelb.k8c.io/origin-name: my-ingress
+    kubelb.k8c.io/origin-ns: my-namespace
+    kubelb.k8c.io/origin-resource-kind: Ingress
+spec:
+  endpoints:
+    - name: my-endpoints
+      addresses:
+        - ip: 10.10.1.1
+        - ip: 10.10.1.2
+      ports:
+        - name: http
+          port: 30080
+          protocol: TCP
+  source:
+    kubernetes:
+      resource:
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: my-ingress
+          namespace: my-namespace
+        spec:
+          rules:
+            - host: app.example.com
+              http:
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: my-service
+                        port:
+                          number: 80
+      services:
+        - apiVersion: v1
+          kind: Service
+          metadata:
+            name: my-service
+            namespace: my-namespace
+          spec:
+            ports:
+              - name: http
+                port: 80
+                targetPort: 8080
+            selector:
+              app: myapp
+status:
+  resources:
+    source: Ingress/my-namespace/my-ingress
+    services:
+      my-service:
+        apiVersion: v1
+        kind: Service
+        name: my-service
+        namespace: default
+        generatedName: my-service-generated
+        ports:
+          - name: http
+            port: 80
+            targetPort: 8080
+    route:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      name: my-ingress
+      namespace: default
+      generatedName: my-ingress-generated
+```
+
+### Route from HTTPRoute
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Route
+metadata:
+  name: example-route-httproute
+  namespace: default
+  labels:
+    kubelb.k8c.io/origin-name: my-httproute
+    kubelb.k8c.io/origin-ns: my-namespace
+    kubelb.k8c.io/origin-resource-kind: HTTPRoute
+spec:
+  endpoints:
+    - name: my-endpoints
+      addressesReference:
+        name: default
+        namespace: default
+  source:
+    kubernetes:
+      resource:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: HTTPRoute
+        metadata:
+          name: my-httproute
+          namespace: my-namespace
+        spec:
+          parentRefs:
+            - name: my-gateway
+              namespace: gateway-system
+          hostnames:
+            - api.example.com
+          rules:
+            - matches:
+                - path:
+                    type: PathPrefix
+                    value: /api
+              backendRefs:
+                - name: api-service
+                  port: 8080
+      services:
+        - apiVersion: v1
+          kind: Service
+          metadata:
+            name: api-service
+            namespace: my-namespace
+          spec:
+            ports:
+              - name: api
+                port: 8080
+                targetPort: 8080
+```
+
+### Route from Gateway
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Route
+metadata:
+  name: example-route-gateway
+  namespace: default
+  labels:
+    kubelb.k8c.io/origin-name: my-gateway
+    kubelb.k8c.io/origin-ns: gateway-system
+    kubelb.k8c.io/origin-resource-kind: Gateway
+spec:
+  endpoints:
+    - name: gateway-endpoints
+      addresses:
+        - ip: 10.10.1.10
+        - ip: 10.10.1.11
+      ports:
+        - name: http
+          port: 80
+          protocol: TCP
+        - name: https
+          port: 443
+          protocol: TCP
+  source:
+    kubernetes:
+      resource:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: Gateway
+        metadata:
+          name: my-gateway
+          namespace: gateway-system
+        spec:
+          gatewayClassName: kubelb
+          listeners:
+            - name: http
+              protocol: HTTP
+              port: 80
+            - name: https
+              protocol: HTTPS
+              port: 443
+              tls:
+                mode: Terminate
+                certificateRefs:
+                  - name: gateway-cert
+```
+
+## Labels
+
+<ParamField path="kubelb.k8c.io/origin-name" type="string">
+  Name of the original resource in the tenant cluster.
+</ParamField>
+
+<ParamField path="kubelb.k8c.io/origin-ns" type="string">
+  Namespace of the original resource in the tenant cluster.
+</ParamField>
+
+<ParamField path="kubelb.k8c.io/origin-resource-kind" type="string">
+  Kind of the original resource in the tenant cluster (e.g., Ingress, HTTPRoute, Gateway).
+</ParamField>

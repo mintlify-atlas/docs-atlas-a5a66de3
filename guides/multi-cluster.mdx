@@ -1,0 +1,657 @@
+---
+title: Multi-Cluster Management
+description: Managing multiple tenant clusters with KubeLB
+---
+
+KubeLB is designed for multi-cluster environments, allowing you to manage load balancers for multiple tenant clusters from a single management cluster. This guide covers tenant management, cluster isolation, and best practices.
+
+## Architecture Overview
+
+KubeLB uses a hub-and-spoke model:
+
+- **Management Cluster (Hub)**: Runs KubeLB Manager, hosts load balancers and routing infrastructure
+- **Tenant Clusters (Spokes)**: Run KubeLB CCM, send load balancer configurations to the hub
+
+```
+┌─────────────────────────────────────────┐
+│      Management Cluster (Hub)           │
+│                                         │
+│  ┌─────────────────┐  ┌──────────────┐ │
+│  │ KubeLB Manager  │  │ Envoy Gateway│ │
+│  └─────────────────┘  └──────────────┘ │
+│                                         │
+│  ┌──────────────────────────────────┐  │
+│  │  Tenant Namespaces               │  │
+│  │  - tenant-cluster-1              │  │
+│  │  - tenant-cluster-2              │  │
+│  │  - tenant-cluster-3              │  │
+│  └──────────────────────────────────┘  │
+└─────────────────────────────────────────┘
+              ▲  ▲  ▲
+              │  │  │
+       ┌──────┘  │  └──────┐
+       │         │         │
+   ┌───▼───┐ ┌──▼───┐ ┌───▼───┐
+   │Tenant │ │Tenant│ │Tenant │
+   │   1   │ │  2   │ │   3   │
+   │  CCM  │ │ CCM  │ │  CCM  │
+   └───────┘ └──────┘ └───────┘
+```
+
+## Tenant Resource
+
+The Tenant CRD in the management cluster defines configuration for each tenant cluster:
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Tenant
+metadata:
+  name: tenant-cluster-1
+spec:
+  # Load Balancer Settings
+  loadBalancer:
+    class: "default"
+    disable: false
+  
+  # Ingress Settings
+  ingress:
+    class: "kubelb"
+    disable: false
+  
+  # Gateway API Settings
+  gatewayAPI:
+    class: "kubelb"
+    disable: false
+    defaultGateway:
+      name: default-gateway
+      namespace: tenant-cluster-1
+  
+  # DNS Settings
+  dns:
+    wildcardDomain: "cluster1.example.com"
+    allowExplicitHostnames: true
+    useDNSAnnotations: true
+    useCertificateAnnotations: true
+  
+  # Certificate Settings
+  certificates:
+    defaultClusterIssuer: "letsencrypt-prod"
+  
+  # Annotation Settings
+  propagateAllAnnotations: false
+  propagatedAnnotations:
+    external-dns.alpha.kubernetes.io/hostname: ""
+    cert-manager.io/cluster-issuer: ""
+```
+
+## Setting Up Tenants
+
+<Steps>
+  <Step title="Create Tenant Namespace">
+    In the management cluster, create a namespace for the tenant:
+
+    ```bash
+    kubectl create namespace tenant-cluster-1
+    ```
+
+    This namespace will hold all resources for this tenant (LoadBalancer CRDs, Route CRDs, etc.).
+  </Step>
+
+  <Step title="Create Tenant Resource">
+    Create the Tenant resource:
+
+    ```yaml
+    apiVersion: kubelb.k8c.io/v1alpha1
+    kind: Tenant
+    metadata:
+      name: tenant-cluster-1
+    spec:
+      loadBalancer:
+        class: "default"
+      dns:
+        wildcardDomain: "cluster1.example.com"
+    ```
+
+    Apply it:
+    ```bash
+    kubectl apply -f tenant.yaml
+    ```
+  </Step>
+
+  <Step title="Configure CCM in Tenant Cluster">
+    Deploy KubeLB CCM in the tenant cluster with the correct cluster name:
+
+    ```bash
+    helm install kubelb-ccm kubelb/kubelb-ccm \\
+      --namespace kubelb \\
+      --create-namespace \\
+      --set clusterName=tenant-cluster-1 \\
+      --set kubelb.manager.address=<management-cluster-address>
+    ```
+
+    The `clusterName` must match the Tenant resource name.
+  </Step>
+
+  <Step title="Verify Connectivity">
+    Check that CCM can connect to the management cluster:
+
+    ```bash
+    kubectl logs -n kubelb -l app.kubernetes.io/name=kubelb-ccm
+    ```
+
+    You should see messages indicating successful connection.
+  </Step>
+</Steps>
+
+## Tenant Isolation
+
+KubeLB provides strong isolation between tenants:
+
+### Namespace Isolation
+
+Each tenant gets a dedicated namespace in the management cluster. Resources from different tenants are completely separated.
+
+```bash
+# Tenant 1 resources
+kubectl get loadbalancers -n tenant-cluster-1
+
+# Tenant 2 resources
+kubectl get loadbalancers -n tenant-cluster-2
+```
+
+### Resource Isolation
+
+Each tenant's services get independent load balancer IPs:
+
+```yaml
+# Tenant 1: echo-server -> 203.0.113.10
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-server
+  namespace: default
+spec:
+  type: LoadBalancer
+  # ... gets IP 203.0.113.10
+
+# Tenant 2: echo-server -> 203.0.113.20
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-server  # Same name
+  namespace: default
+spec:
+  type: LoadBalancer
+  # ... gets different IP 203.0.113.20
+```
+
+### Network Isolation
+
+Traffic for each tenant is routed only to that tenant's cluster nodes:
+
+```
+Client -> LB IP A -> Tenant 1 Nodes -> Tenant 1 Pods
+Client -> LB IP B -> Tenant 2 Nodes -> Tenant 2 Pods
+```
+
+## Tenant Configuration
+
+### Load Balancer Settings
+
+Control Layer 4 load balancing behavior:
+
+```yaml
+spec:
+  loadBalancer:
+    # Specify load balancer class
+    class: "cloud-provider-lb"
+    # Disable L4 load balancing for this tenant
+    disable: false
+```
+
+### Ingress Settings
+
+Control Ingress behavior:
+
+```yaml
+spec:
+  ingress:
+    # Specify ingress class to use
+    class: "kubelb"
+    # Disable Ingress support for this tenant
+    disable: false
+```
+
+### Gateway API Settings
+
+Control Gateway API behavior:
+
+```yaml
+spec:
+  gatewayAPI:
+    # Gateway class for this tenant
+    class: "kubelb"
+    # Default gateway for routes without explicit parentRef
+    defaultGateway:
+      name: shared-gateway
+      namespace: tenant-cluster-1
+    # Disable Gateway API for this tenant
+    disable: false
+```
+
+### DNS Settings
+
+Configure DNS automation:
+
+```yaml
+spec:
+  dns:
+    # Base domain for wildcard DNS records
+    wildcardDomain: "tenant1.example.com"
+    # Allow explicit hostnames in LoadBalancer.Spec.Hostname
+    allowExplicitHostnames: true
+    # Add external-dns annotations to DNS resources
+    useDNSAnnotations: true
+    # Add cert-manager annotations to certificate resources
+    useCertificateAnnotations: true
+```
+
+With these settings, a service can get a hostname like:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  namespace: default
+spec:
+  type: LoadBalancer
+  # KubeLB will create DNS record: api-service.tenant1.example.com
+```
+
+See the [DNS and Certificates guide](/guides/dns-certificates) for details.
+
+### Certificate Settings
+
+Configure automatic TLS certificates:
+
+```yaml
+spec:
+  certificates:
+    # Default cert-manager ClusterIssuer
+    defaultClusterIssuer: "letsencrypt-prod"
+```
+
+### Annotation Propagation
+
+Control which annotations are propagated from tenant resources:
+
+```yaml
+spec:
+  # Propagate all annotations (not recommended)
+  propagateAllAnnotations: false
+  
+  # Specific annotations to propagate (key-value pairs)
+  # Empty value means any value is allowed
+  propagatedAnnotations:
+    external-dns.alpha.kubernetes.io/hostname: ""
+    external-dns.alpha.kubernetes.io/ttl: ""
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+```
+
+Only specified annotations will be propagated to load balancers and routes.
+
+## Multi-Tenant Scenarios
+
+### Shared Gateway
+
+Multiple tenant clusters can share a single Gateway:
+
+<Tabs>
+  <Tab title="Management Cluster">
+    Create a shared Gateway in the management cluster:
+
+    ```yaml
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: Gateway
+    metadata:
+      name: shared-gateway
+      namespace: shared
+    spec:
+      gatewayClassName: eg  # Envoy Gateway class
+      listeners:
+      - name: http
+        protocol: HTTP
+        port: 80
+        allowedRoutes:
+          namespaces:
+            from: All
+    ```
+  </Tab>
+
+  <Tab title="Tenant 1">
+    In tenant cluster 1, create HTTPRoutes that reference the shared gateway:
+
+    ```yaml
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+    metadata:
+      name: app-route
+      namespace: default
+    spec:
+      parentRefs:
+      - name: shared-gateway
+        namespace: shared
+      hostnames:
+      - "tenant1.example.com"
+      rules:
+      - backendRefs:
+        - name: app-service
+          port: 8080
+    ```
+  </Tab>
+
+  <Tab title="Tenant 2">
+    In tenant cluster 2, use different hostname:
+
+    ```yaml
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+    metadata:
+      name: app-route
+      namespace: default
+    spec:
+      parentRefs:
+      - name: shared-gateway
+        namespace: shared
+      hostnames:
+      - "tenant2.example.com"  # Different hostname
+      rules:
+      - backendRefs:
+        - name: app-service
+          port: 8080
+    ```
+  </Tab>
+</Tabs>
+
+Both tenants share the same Gateway IP but traffic is routed based on hostname.
+
+### Dedicated Gateways
+
+Each tenant can have dedicated Gateways:
+
+```yaml
+# Tenant 1 Gateway
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: tenant1-gateway
+  namespace: default
+spec:
+  gatewayClassName: kubelb
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+---
+# Tenant 2 Gateway
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: tenant2-gateway
+  namespace: default
+spec:
+  gatewayClassName: kubelb
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+```
+
+Each gets a separate IP address.
+
+## Monitoring and Observability
+
+### Viewing Tenant Resources
+
+From the management cluster:
+
+```bash
+# List all tenants
+kubectl get tenants
+
+# Get tenant configuration
+kubectl get tenant tenant-cluster-1 -o yaml
+
+# List LoadBalancers for a tenant
+kubectl get loadbalancers -n tenant-cluster-1
+
+# List Routes for a tenant
+kubectl get routes -n tenant-cluster-1
+
+# List all resources across all tenants
+kubectl get loadbalancers -A
+kubectl get routes -A
+```
+
+### Metrics
+
+KubeLB CCM exposes metrics per tenant:
+
+```promql
+# Number of managed services per tenant namespace
+kubelb_ccm_managed_services_total{namespace="default"}
+
+# Service reconciliation duration
+kubelb_ccm_service_reconcile_duration_seconds{namespace="default"}
+
+# Ingress metrics
+kubelb_ccm_managed_ingresses_total{namespace="default"}
+```
+
+### Logs
+
+CCM logs include tenant context:
+
+```bash
+# View logs from tenant cluster
+kubectl logs -n kubelb -l app.kubernetes.io/name=kubelb-ccm
+
+# Filter for specific service
+kubectl logs -n kubelb -l app.kubernetes.io/name=kubelb-ccm | grep "service=my-service"
+```
+
+## Adding a New Tenant
+
+<Steps>
+  <Step title="Create Tenant Resource">
+    In the management cluster:
+
+    ```bash
+    kubectl create namespace tenant-cluster-3
+    ```
+
+    ```yaml
+    apiVersion: kubelb.k8c.io/v1alpha1
+    kind: Tenant
+    metadata:
+      name: tenant-cluster-3
+    spec:
+      loadBalancer:
+        class: "default"
+      dns:
+        wildcardDomain: "cluster3.example.com"
+    ```
+  </Step>
+
+  <Step title="Deploy CCM">
+    In the new tenant cluster:
+
+    ```bash
+    helm install kubelb-ccm kubelb/kubelb-ccm \\
+      --namespace kubelb \\
+      --create-namespace \\
+      --set clusterName=tenant-cluster-3 \\
+      --set kubelb.manager.address=<management-cluster-address>
+    ```
+  </Step>
+
+  <Step title="Test Connectivity">
+    Create a test service:
+
+    ```yaml
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: test-service
+      namespace: default
+    spec:
+      type: LoadBalancer
+      selector:
+        app: test
+      ports:
+      - port: 80
+        targetPort: 80
+    ```
+
+    Verify it gets an IP:
+    ```bash
+    kubectl get svc test-service
+    ```
+  </Step>
+
+  <Step title="Verify in Management Cluster">
+    ```bash
+    kubectl get loadbalancers -n tenant-cluster-3
+    ```
+  </Step>
+</Steps>
+
+## Removing a Tenant
+
+<Warning>
+Removing a tenant will delete all its load balancers and routes. Ensure you have backed up any important configuration.
+</Warning>
+
+<Steps>
+  <Step title="Scale Down CCM">
+    In the tenant cluster:
+
+    ```bash
+    helm uninstall kubelb-ccm -n kubelb
+    ```
+  </Step>
+
+  <Step title="Delete Tenant Resources">
+    In the management cluster:
+
+    ```bash
+    # Delete all LoadBalancers
+    kubectl delete loadbalancers -n tenant-cluster-3 --all
+
+    # Delete all Routes
+    kubectl delete routes -n tenant-cluster-3 --all
+    ```
+  </Step>
+
+  <Step title="Delete Tenant">
+    ```bash
+    kubectl delete tenant tenant-cluster-3
+    kubectl delete namespace tenant-cluster-3
+    ```
+  </Step>
+</Steps>
+
+## Best Practices
+
+### Naming Conventions
+
+- Use descriptive tenant names: `production-us-east`, `staging-eu-west`
+- Match tenant name with cluster identifier
+- Keep tenant namespace names consistent
+
+### Resource Limits
+
+Consider setting resource quotas per tenant namespace:
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: tenant-quota
+  namespace: tenant-cluster-1
+spec:
+  hard:
+    count/loadbalancers.kubelb.k8c.io: "100"
+    count/routes.kubelb.k8c.io: "200"
+```
+
+### Security
+
+- Use RBAC to restrict access to tenant namespaces
+- Consider network policies to isolate tenant traffic
+- Use separate service accounts for each CCM
+
+### Monitoring
+
+- Set up alerts for CCM connectivity issues
+- Monitor load balancer provisioning times
+- Track resource usage per tenant
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="CCM cannot connect to management cluster">
+    **Check network connectivity:**
+    ```bash
+    kubectl exec -n kubelb <ccm-pod> -- curl <management-cluster-address>
+    ```
+
+    **Verify credentials:**
+    ```bash
+    kubectl get secret -n kubelb kubelb-cluster
+    ```
+
+    **Check CCM logs:**
+    ```bash
+    kubectl logs -n kubelb -l app.kubernetes.io/name=kubelb-ccm
+    ```
+  </Accordion>
+
+  <Accordion title="Tenant resources not created">
+    **Verify Tenant exists:**
+    ```bash
+    kubectl get tenant <tenant-name>
+    ```
+
+    **Check tenant namespace:**
+    ```bash
+    kubectl get namespace <tenant-namespace>
+    ```
+
+    **Verify CCM cluster name:**
+    ```bash
+    kubectl get deployment -n kubelb kubelb-ccm -o yaml | grep cluster-name
+    ```
+
+    Ensure it matches the Tenant name.
+  </Accordion>
+
+  <Accordion title="Cross-tenant interference">
+    **Verify namespace isolation:**
+    ```bash
+    kubectl get loadbalancers -A
+    ```
+
+    Each tenant should only have resources in their namespace.
+
+    **Check for naming conflicts:**
+    Ensure tenant names are unique.
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+- Configure [DNS automation](/guides/dns-certificates) per tenant
+- Set up [monitoring and alerting](https://docs.kubermatic.com/kubelb/main/tutorials/observability/)
+- Learn about [Layer 4](/guides/layer4-services) and [Layer 7](/guides/layer7-routing) load balancing

@@ -1,0 +1,289 @@
+---
+title: Architecture
+description: Understanding KubeLB's hub-and-spoke architecture and core components
+---
+
+## Overview
+
+KubeLB follows a **hub-and-spoke** architecture model where the Management Cluster (hub) centrally manages load balancing for multiple Tenant Clusters (spokes). This design provides centralized control while maintaining strong multi-tenant isolation.
+
+## Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  Management Cluster                     │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │           KubeLB Manager                         │  │
+│  │  • Envoy xDS Control Plane                       │  │
+│  │  • LoadBalancer/Route Controllers                │  │
+│  │  • Tenant Management                             │  │
+│  └──────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │           Envoy Proxy                            │  │
+│  │  • Receives xDS configuration                    │  │
+│  │  • Routes traffic to tenant nodes               │  │
+│  └──────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+                     │
+                     ├──────────────────────┬───────────
+                     ▼                      ▼
+        ┌────────────────────┐  ┌────────────────────┐
+        │  Tenant Cluster 1  │  │  Tenant Cluster 2  │
+        │  ┌──────────────┐  │  │  ┌──────────────┐  │
+        │  │  KubeLB CCM  │  │  │  │  KubeLB CCM  │  │
+        │  │  Watches:    │  │  │  │  Watches:    │  │
+        │  │  • Services  │  │  │  │  • Services  │  │
+        │  │  • Ingress   │  │  │  │  • Ingress   │  │
+        │  │  • Gateway   │  │  │  │  • Gateway   │  │
+        │  │  • Nodes     │  │  │  │  • Nodes     │  │
+        │  └──────────────┘  │  │  └──────────────┘  │
+        └────────────────────┘  └────────────────────┘
+```
+
+## Core Components
+
+### KubeLB Manager
+
+The KubeLB Manager runs in the management cluster and serves as the central control plane.
+
+<Card title="Key Responsibilities" icon="server">
+  - Hosts the Envoy xDS (Extensible Discovery Service) control plane
+  - Implements [envoy-control-plane](https://github.com/envoyproxy/go-control-plane) APIs
+  - Manages Envoy Proxy deployments
+  - Processes LoadBalancer and Route CRDs from tenant clusters
+  - Handles tenant registration and isolation
+  - Configures load balancer services
+</Card>
+
+**Controllers:**
+
+- **LoadBalancer Controller** (`internal/controllers/kubelb/loadbalancer_controller.go`)
+  - Reconciles LoadBalancer CRDs from tenant clusters
+  - Creates LoadBalancer services in the management cluster
+  - Manages port allocation for services
+
+- **EnvoyCP Controller** (`internal/controllers/kubelb/envoycp_controller.go`)
+  - Generates xDS configuration for Envoy proxies
+  - Updates Envoy cache with routing information
+  - Handles both L4 and L7 traffic configuration
+
+- **Route Controller** (`internal/controllers/kubelb/route_controller.go`)
+  - Processes Route CRDs for Ingress and Gateway API resources
+  - Configures L7 routing rules in Envoy
+
+- **Tenant Controller** (`internal/controllers/kubelb/tenant_controller.go`)
+  - Manages tenant namespaces
+  - Ensures multi-tenant isolation
+
+- **SyncSecret Controller** (`internal/controllers/kubelb/sync_secret_controller.go`)
+  - Synchronizes secrets (TLS certificates) from tenant clusters
+
+### KubeLB CCM (Cloud Controller Manager)
+
+The KubeLB CCM runs in each tenant cluster and acts as a bridge to the management cluster.
+
+<Card title="Key Responsibilities" icon="cloud">
+  - Watches for Kubernetes resources in the tenant cluster
+  - Propagates configurations to the management cluster as CRDs
+  - Updates service status with assigned load balancer IPs
+  - Monitors node health and endpoints
+  - Converts Ingress to HTTPRoute (optional)
+</Card>
+
+**Controllers:**
+
+- **Service Controller** (`internal/controllers/ccm/service_controller.go`)
+  - Watches services of type `LoadBalancer`
+  - Creates LoadBalancer CRDs in the management cluster
+  - Updates service status with assigned IPs
+
+- **Node Controller** (`internal/controllers/ccm/node_controller.go`)
+  - Monitors tenant cluster nodes
+  - Reports node endpoints to the management cluster
+
+- **Ingress Controller** (`internal/controllers/ccm/ingress_controller.go`)
+  - Watches Ingress resources
+  - Creates Route CRDs in the management cluster
+
+- **Gateway Controllers** (`internal/controllers/ccm/gateway_*.go`)
+  - Gateway, HTTPRoute, and GRPCRoute reconcilers
+  - Convert Gateway API resources to Route CRDs
+
+- **SyncSecret Controller** (`internal/controllers/ccm/sync_secret_controller.go`)
+  - Synchronizes secrets to the management cluster
+
+### Envoy Proxy
+
+Envoy Proxy is deployed in the management cluster and handles actual traffic routing.
+
+<Card title="Key Capabilities" icon="network-wired">
+  - Receives dynamic configuration via xDS from the KubeLB Manager
+  - Routes L4 traffic directly to tenant node ports
+  - Routes L7 traffic with path-based and host-based routing
+  - Provides observability through metrics and access logs
+</Card>
+
+## Envoy Proxy Deployment Topologies
+
+KubeLB supports multiple Envoy deployment strategies:
+
+<CardGroup cols={2}>
+  <Card title="Shared (Default)" icon="share-nodes">
+    Single Envoy proxy per tenant cluster. All services in the tenant use this proxy. Recommended for most deployments.
+  </Card>
+  <Card title="Global" icon="globe">
+    Single Envoy proxy for all tenant clusters. All services across all tenants use one proxy. Best for high-density environments.
+  </Card>
+</CardGroup>
+
+<Warning>
+**Dedicated topology** (one Envoy proxy per service) was deprecated in v1.1.0 and now defaults to shared topology.
+</Warning>
+
+## API Resources (CRDs)
+
+KubeLB defines custom resources for managing load balancing:
+
+### LoadBalancer
+
+Represents a Layer 4 load balancer service from a tenant cluster.
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: LoadBalancer
+metadata:
+  name: my-service
+  namespace: tenant-production
+spec:
+  type: LoadBalancer
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+  endpoints:
+  - addresses:
+    - ip: 10.0.1.10
+      nodeName: node-1
+    port: 30080
+```
+
+### Route
+
+Represents Layer 7 routing configuration for Ingress or Gateway API resources.
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Route
+metadata:
+  name: my-ingress
+  namespace: tenant-production
+spec:
+  source:
+    type: Ingress
+    name: my-ingress
+    namespace: default
+  endpoints:
+  - addresses:
+    - ip: 10.0.1.10
+      nodeName: node-1
+    port: 30443
+```
+
+### Tenant
+
+Represents a registered tenant cluster (cluster-scoped resource).
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Tenant
+metadata:
+  name: tenant-production
+spec:
+  tenantName: production
+```
+
+### Config
+
+Global configuration for the KubeLB Manager.
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Config
+metadata:
+  name: default
+  namespace: kubelb
+spec:
+  envoyProxy:
+    topology: shared
+    replicas: 2
+    useDaemonset: false
+  propagateAllAnnotations: false
+```
+
+## Information Flow
+
+<Steps>
+  <Step title="Resource Creation">
+    A user creates a Service (type LoadBalancer), Ingress, or Gateway resource in a tenant cluster
+  </Step>
+  <Step title="CCM Detection">
+    The KubeLB CCM running in the tenant cluster watches for the resource and detects the change
+  </Step>
+  <Step title="CRD Propagation">
+    The CCM creates a corresponding LoadBalancer or Route CRD in the management cluster's tenant namespace
+  </Step>
+  <Step title="Manager Processing">
+    The KubeLB Manager controllers reconcile the CRD and configure the load balancer and Envoy proxy
+  </Step>
+  <Step title="xDS Configuration">
+    The EnvoyCP controller generates xDS configuration and pushes it to Envoy proxies via the xDS server
+  </Step>
+  <Step title="Status Update">
+    The manager updates the LoadBalancer/Route CRD status with the assigned IP address
+  </Step>
+  <Step title="Status Sync">
+    The CCM watches the CRD status and updates the original Service/Ingress/Gateway in the tenant cluster
+  </Step>
+  <Step title="Traffic Routing">
+    Client traffic hits the LoadBalancer service, routes through Envoy, and reaches tenant node ports
+  </Step>
+</Steps>
+
+## Multi-Tenant Isolation
+
+KubeLB enforces strict multi-tenant isolation:
+
+- Each tenant cluster is assigned a dedicated namespace in the management cluster (e.g., `tenant-production`)
+- Tenants can only create and access their own LoadBalancer and Route CRDs
+- Tenants have no access to native Kubernetes resources in the management cluster
+- RBAC policies ensure tenants cannot access other tenants' resources
+
+## Requirements
+
+### Management Cluster
+
+<CardGroup cols={2}>
+  <Card title="LoadBalancer Implementation" icon="cloud-arrow-up">
+    Must have a working LoadBalancer service implementation (cloud provider or MetalLB)
+  </Card>
+  <Card title="Network Access" icon="network-wired">
+    Must have network connectivity to tenant cluster nodes on the NodePort range (30000-32767)
+  </Card>
+</CardGroup>
+
+### Tenant Cluster
+
+<CardGroup cols={2}>
+  <Card title="Tenant Registration" icon="id-card">
+    Must be registered as a tenant in the management cluster
+  </Card>
+  <Card title="Management API Access" icon="key">
+    CCM requires a kubeconfig with access to the management cluster API
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<Card title="Quick Start Guide" icon="rocket" href="/quickstart">
+  Follow the quick start guide to deploy KubeLB in your environment
+</Card>

@@ -1,0 +1,222 @@
+---
+title: Tenant
+description: API reference for the Tenant Custom Resource Definition
+---
+
+The Tenant resource defines tenant-specific configuration for load balancing, ingress, Gateway API, DNS, and certificate management. It provides multi-tenant isolation at the cluster scope.
+
+## API Version
+
+`kubelb.k8c.io/v1alpha1`
+
+## Resource Scope
+
+Cluster-scoped
+
+## Spec Fields
+
+### Annotation Settings
+
+<ParamField path="propagatedAnnotations" type="map[string]string">
+  Defines the list of annotations (key-value pairs) that will be propagated to the LoadBalancer service. Keep the `value` field empty in the key-value pair to allow any value.
+  
+  Tenant configuration has higher precedence than the annotations specified at the Config level.
+</ParamField>
+
+<ParamField path="propagateAllAnnotations" type="boolean">
+  Defines whether all annotations will be propagated to the LoadBalancer service. If set to true, `propagatedAnnotations` will be ignored.
+  
+  Tenant configuration has higher precedence than the value specified at the Config level.
+</ParamField>
+
+<ParamField path="defaultAnnotations" type="map[AnnotatedResource]Annotations">
+  Defines the list of annotations (key-value pairs) that will be set on the load balancing resources if not already present. A special key `all` can be used to apply the same set of annotations to all resources.
+  
+  Tenant configuration has higher precedence than the annotations specified at the Config level.
+  
+  Valid resource types: `all`, `service`, `ingress`, `gateway`, `httproute`, `grpcroute`, `tcproute`, `udproute`, `tlsroute`
+</ParamField>
+
+### LoadBalancer Settings
+
+<ParamField path="loadBalancer.class" type="string">
+  Class of the load balancer to use. This has higher precedence than the value specified in the Config.
+</ParamField>
+
+<ParamField path="loadBalancer.disable" type="boolean" default="false">
+  Flag that can be used to disable L4 load balancing for a tenant.
+</ParamField>
+
+### Ingress Settings
+
+<ParamField path="ingress.class" type="string">
+  Class of the ingress to use. This has higher precedence than the value specified in the Config.
+</ParamField>
+
+<ParamField path="ingress.disable" type="boolean" default="false">
+  Flag that can be used to disable Ingress for a tenant.
+</ParamField>
+
+### Gateway API Settings
+
+<ParamField path="gatewayAPI.class" type="string">
+  Class of the gateway API to use. This can be used to specify a specific gateway API implementation. This has higher precedence than the value specified in the Config.
+</ParamField>
+
+<ParamField path="gatewayAPI.defaultGateway" type="ObjectReference">
+  Default gateway reference to use for the tenant. This is only used for load balancer hostname.
+</ParamField>
+
+<ParamField path="gatewayAPI.defaultGateway.name" type="string">
+  Name of the gateway.
+</ParamField>
+
+<ParamField path="gatewayAPI.defaultGateway.namespace" type="string">
+  Namespace of the gateway.
+</ParamField>
+
+<ParamField path="gatewayAPI.disable" type="boolean" default="false">
+  Flag that can be used to disable Gateway API for a tenant.
+</ParamField>
+
+### DNS Settings
+
+<ParamField path="dns.wildcardDomain" type="string">
+  Domain that will be used as the base domain to create wildcard DNS records for DNS resources. This is only used for determining the hostname for LoadBalancer resources at `LoadBalancer.Spec.Hostname`.
+</ParamField>
+
+<ParamField path="dns.allowExplicitHostnames" type="boolean">
+  Flag that can be used to allow explicit hostnames to be used for DNS resources. This is only used when `LoadBalancer.Spec.Hostname` is set.
+</ParamField>
+
+<ParamField path="dns.useDNSAnnotations" type="boolean">
+  Flag that can be used to add DNS annotations to DNS resources. This is only used when `LoadBalancer.Spec.Hostname` is set.
+</ParamField>
+
+<ParamField path="dns.useCertificateAnnotations" type="boolean">
+  Flag that can be used to add Certificate annotations to Certificate resources. This is only used when `LoadBalancer.Spec.Hostname` is set.
+</ParamField>
+
+### Certificate Settings
+
+<ParamField path="certificates.defaultClusterIssuer" type="string">
+  The Cluster Issuer to use for the certificates by default. This is only used for load balancer hostname.
+</ParamField>
+
+## Status Fields
+
+The Tenant resource currently does not have any status fields.
+
+## Example
+
+### Basic Tenant Configuration
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Tenant
+metadata:
+  name: tenant-example
+spec:
+  propagateAllAnnotations: false
+  propagatedAnnotations:
+    custom.io/annotation: "allowed-value"
+    another.io/annotation: ""
+  defaultAnnotations:
+    all:
+      default.io/annotation: "default-value"
+    service:
+      service.io/annotation: "service-specific"
+  loadBalancer:
+    class: metallb
+    disable: false
+  ingress:
+    class: nginx
+    disable: false
+  gatewayAPI:
+    class: envoy
+    disable: false
+  dns:
+    wildcardDomain: "*.tenant1.example.com"
+    allowExplicitHostnames: true
+    useDNSAnnotations: true
+    useCertificateAnnotations: true
+  certificates:
+    defaultClusterIssuer: letsencrypt-prod
+```
+
+### Tenant with LoadBalancer Disabled
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Tenant
+metadata:
+  name: tenant-no-l4
+spec:
+  loadBalancer:
+    disable: true
+  ingress:
+    class: nginx
+  gatewayAPI:
+    class: envoy
+    defaultGateway:
+      name: shared-gateway
+      namespace: gateway-system
+  dns:
+    wildcardDomain: "*.apps.example.com"
+```
+
+### Tenant with Custom Gateway
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Tenant
+metadata:
+  name: tenant-custom-gateway
+spec:
+  propagateAllAnnotations: true
+  gatewayAPI:
+    class: istio
+    defaultGateway:
+      name: istio-gateway
+      namespace: istio-system
+    disable: false
+  dns:
+    wildcardDomain: "*.tenant-custom.example.com"
+    allowExplicitHostnames: false
+  certificates:
+    defaultClusterIssuer: cert-manager-issuer
+```
+
+### Tenant with Specific Annotations
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Tenant
+metadata:
+  name: tenant-annotations
+spec:
+  propagatedAnnotations:
+    cloud.provider.io/load-balancer-type: "nlb"
+    monitoring.io/scrape: "true"
+  defaultAnnotations:
+    httproute:
+      route.io/timeout: "30s"
+      route.io/retry: "3"
+    gateway:
+      gateway.io/class: "premium"
+  loadBalancer:
+    class: cloud-lb
+  dns:
+    wildcardDomain: "*.prod.example.com"
+    useDNSAnnotations: true
+    useCertificateAnnotations: true
+  certificates:
+    defaultClusterIssuer: letsencrypt-prod
+```
+
+## Notes
+
+- Tenant configuration always takes precedence over Config-level settings
+- Use the `disable` flags to selectively disable L4 load balancing, Ingress, or Gateway API functionality per tenant
+- The `wildcardDomain` setting is used to automatically generate hostnames for LoadBalancer resources
+- Annotation settings allow fine-grained control over which annotations are propagated or set by default on load balancing resources

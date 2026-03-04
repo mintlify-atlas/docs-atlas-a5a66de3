@@ -1,0 +1,607 @@
+---
+title: Upgrading
+description: Upgrade KubeLB components and manage version compatibility
+---
+
+This guide covers upgrading KubeLB Manager and CCM components, version compatibility, and best practices for zero-downtime upgrades.
+
+## Version Compatibility
+
+KubeLB follows semantic versioning and maintains backward compatibility within major versions.
+
+### Compatibility Matrix
+
+| KubeLB Version | Kubernetes Version | Envoy Gateway Version | Gateway API Version |
+|----------------|--------------------|-----------------------|---------------------|
+| v1.0.x | 1.25 - 1.31+ | v1.3.0 | v1.0+ |
+| v0.15.x | 1.24 - 1.30 | v1.2.0 | v1.0+ |
+| v0.14.x | 1.24 - 1.29 | v1.1.0 | v0.8+ |
+
+<Note>
+KubeLB Manager and CCM should run the same version. Minor version mismatches (e.g., Manager v1.0.1 with CCM v1.0.0) are supported, but major version skew is not recommended.
+</Note>
+
+### API Version Support
+
+KubeLB CRDs are versioned independently:
+
+| CRD | API Version | Status | Notes |
+|-----|-------------|--------|-------|
+| Config | `kubelb.k8c.io/v1alpha1` | Stable | Core configuration |
+| LoadBalancer | `kubelb.k8c.io/v1alpha1` | Stable | Layer 4 load balancing |
+| Route | `kubelb.k8c.io/v1alpha1` | Stable | Layer 7 routing |
+| Tenant | `kubelb.k8c.io/v1alpha1` | Stable | Multi-tenancy |
+| Addresses | `kubelb.k8c.io/v1alpha1` | Stable | Endpoint addresses |
+| SyncSecret | `kubelb.k8c.io/v1alpha1` | Stable | Secret synchronization |
+
+## Pre-Upgrade Checklist
+
+Before upgrading, ensure:
+
+<Steps>
+  <Step title="Backup Critical Resources">
+    ```bash
+    # Backup Config CRD
+    kubectl -n kubelb get config default -o yaml > config-backup.yaml
+    
+    # Backup all LoadBalancers
+    kubectl get loadbalancers -A -o yaml > loadbalancers-backup.yaml
+    
+    # Backup all Routes
+    kubectl get routes -A -o yaml > routes-backup.yaml
+    
+    # Backup Tenants
+    kubectl get tenants -o yaml > tenants-backup.yaml
+    ```
+  </Step>
+  
+  <Step title="Review Release Notes">
+    Check the [official changelog](https://docs.kubermatic.com/kubelb/latest/release-notes) for:
+    - Breaking changes
+    - Deprecated features
+    - New configuration options
+    - Known issues
+  </Step>
+  
+  <Step title="Verify Current State">
+    ```bash
+    # Check Manager version
+    kubectl -n kubelb get deployment kubelb-manager -o jsonpath='{.spec.template.spec.containers[0].image}'
+    
+    # Check CCM version (in tenant clusters)
+    kubectl -n kube-system get deployment kubelb-ccm -o jsonpath='{.spec.template.spec.containers[0].image}'
+    
+    # Ensure all components are healthy
+    kubectl -n kubelb get pods
+    kubectl -n kube-system get pods -l app=kubelb-ccm
+    ```
+  </Step>
+  
+  <Step title="Check Metrics">
+    ```bash
+    # Verify no ongoing issues
+    curl localhost:9443/metrics | grep kubelb_manager_loadbalancer_reconcile_total
+    curl localhost:9445/metrics | grep kubelb_ccm_kubelb_cluster_connected
+    ```
+  </Step>
+</Steps>
+
+## Upgrade Procedure
+
+### Helm Upgrade (Recommended)
+
+KubeLB is typically deployed using Helm charts.
+
+<Tabs>
+  <Tab title="Manager Upgrade">
+    ```bash
+    # Update Helm repository
+    helm repo update kubelb
+    
+    # Check available versions
+    helm search repo kubelb/kubelb-manager --versions
+    
+    # Review changes
+    helm diff upgrade kubelb-manager kubelb/kubelb-manager \
+      --namespace kubelb \
+      --version <new-version> \
+      --values values.yaml
+    
+    # Perform upgrade
+    helm upgrade kubelb-manager kubelb/kubelb-manager \
+      --namespace kubelb \
+      --version <new-version> \
+      --values values.yaml \
+      --wait
+    
+    # Verify upgrade
+    kubectl -n kubelb rollout status deployment kubelb-manager
+    kubectl -n kubelb get pods
+    ```
+    
+    <Warning>
+    The Manager controls the Envoy control plane. During upgrade, existing Envoy proxies continue serving traffic using their last known configuration.
+    </Warning>
+  </Tab>
+  
+  <Tab title="CCM Upgrade">
+    ```bash
+    # Update Helm repository
+    helm repo update kubelb
+    
+    # Upgrade CCM in each tenant cluster
+    helm upgrade kubelb-ccm kubelb/kubelb-ccm \
+      --namespace kube-system \
+      --version <new-version> \
+      --values values.yaml \
+      --wait
+    
+    # Verify upgrade
+    kubectl -n kube-system rollout status deployment kubelb-ccm
+    kubectl -n kube-system get pods -l app=kubelb-ccm
+    
+    # Check CCM connection
+    kubectl -n kube-system logs -l app=kubelb-ccm --tail=50 | grep "Connected"
+    ```
+    
+    <Tip>
+    CCM upgrades can be performed independently for each tenant cluster. This allows gradual rollout across your fleet.
+    </Tip>
+  </Tab>
+  
+  <Tab title="CRD Upgrade">
+    ```bash
+    # CRDs are typically updated automatically by Helm
+    # To manually update CRDs:
+    
+    # Download new CRD manifests
+    kubectl apply -f https://github.com/kubermatic/kubelb/releases/download/<version>/crds.yaml
+    
+    # Verify CRD versions
+    kubectl get crd loadbalancers.kubelb.k8c.io -o jsonpath='{.spec.versions[*].name}'
+    kubectl get crd routes.kubelb.k8c.io -o jsonpath='{.spec.versions[*].name}'
+    kubectl get crd configs.kubelb.k8c.io -o jsonpath='{.spec.versions[*].name}'
+    ```
+    
+    <Note>
+    Helm does not upgrade CRDs by default. Use `--set crds.install=true` to manage CRDs via Helm, or apply them manually.
+    </Note>
+  </Tab>
+</Tabs>
+
+### Manual Upgrade
+
+If not using Helm, upgrade deployment images directly:
+
+```bash
+# Manager upgrade
+kubectl -n kubelb set image deployment/kubelb-manager \
+  manager=quay.io/kubermatic/kubelb:v1.0.0
+
+kubectl -n kubelb rollout status deployment/kubelb-manager
+
+# CCM upgrade (in tenant clusters)
+kubectl -n kube-system set image deployment/kubelb-ccm \
+  ccm=quay.io/kubermatic/kubelb-ccm:v1.0.0
+
+kubectl -n kube-system rollout status deployment/kubelb-ccm
+```
+
+## Upgrade Order
+
+<Warning>
+Follow this order to ensure compatibility and minimize downtime:
+</Warning>
+
+1. **Update CRDs** - Apply new CRD definitions first
+2. **Upgrade Manager** - Update the management cluster Manager
+3. **Upgrade CCM** - Update CCM in each tenant cluster
+4. **Verify Health** - Ensure all components are operational
+5. **Update Config** - Apply any new configuration options
+
+### Zero-Downtime Upgrade Strategy
+
+KubeLB supports rolling upgrades without traffic interruption:
+
+<AccordionGroup>
+<Accordion title="High Availability Requirements">
+For zero-downtime upgrades:
+- Run Manager with multiple replicas (minimum 3)
+- Enable leader election (`--enable-leader-election=true`)
+- Use `shared` topology with multiple Envoy replicas
+- Configure pod disruption budgets
+</Accordion>
+
+<Accordion title="Rolling Update Configuration">
+```yaml Manager Deployment
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+```
+
+```yaml Envoy Deployment
+spec:
+  envoyProxy:
+    replicas: 3
+    gracefulShutdown:
+      disabled: false
+      drainTimeout: "60s"
+      terminationGracePeriodSeconds: 300
+```
+</Accordion>
+
+<Accordion title="Pod Disruption Budget">
+```yaml Manager PDB
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kubelb-manager
+  namespace: kubelb
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: kubelb-manager
+```
+
+```yaml Envoy PDB
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kubelb-envoy
+  namespace: kubelb
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: envoy
+```
+</Accordion>
+</AccordionGroup>
+
+## Post-Upgrade Verification
+
+After upgrading, verify system health:
+
+<CodeGroup>
+```bash Health Checks
+# Manager health
+kubectl -n kubelb get pods -l app=kubelb-manager
+kubectl -n kubelb exec -it <manager-pod> -- curl localhost:8081/healthz
+
+# CCM health (in tenant clusters)
+kubectl -n kube-system get pods -l app=kubelb-ccm
+kubectl -n kube-system exec -it <ccm-pod> -- curl localhost:8081/healthz
+
+# Envoy health
+kubectl -n kubelb get pods -l app=envoy
+```
+
+```bash Functionality Tests
+# Test LoadBalancer service
+kubectl create deployment test-nginx --image=nginx
+kubectl expose deployment test-nginx --type=LoadBalancer --port=80
+kubectl get svc test-nginx --watch
+
+# Wait for EXTERNAL-IP
+# Test connectivity
+curl http://<external-ip>
+
+# Cleanup
+kubectl delete svc test-nginx
+kubectl delete deployment test-nginx
+```
+
+```bash Metrics Verification
+# Check reconciliation metrics
+curl localhost:9443/metrics | grep kubelb_manager_loadbalancer_reconcile_total
+
+# Check CCM connection
+curl localhost:9445/metrics | grep kubelb_ccm_kubelb_cluster_connected
+
+# Verify no errors
+kubectl -n kubelb logs -l app=kubelb-manager --tail=100 | grep -i error
+kubectl -n kube-system logs -l app=kubelb-ccm --tail=100 | grep -i error
+```
+</CodeGroup>
+
+## Upgrade Scenarios
+
+### Upgrading from v0.x to v1.x
+
+<Warning>
+Major version upgrades may include breaking changes. Review release notes carefully.
+</Warning>
+
+**Common breaking changes:**
+- Deprecated topology modes removed (`dedicated`, `global`)
+- Configuration field renames
+- API version changes
+- Minimum Kubernetes version increase
+
+**Migration steps:**
+
+<Steps>
+  <Step title="Update Config CRD">
+    ```bash
+    # Review current config
+    kubectl -n kubelb get config default -o yaml
+    
+    # Update topology if using deprecated values
+    kubectl -n kubelb patch config default --type=merge -p '{
+      "spec": {
+        "envoyProxy": {
+          "topology": "shared"
+        }
+      }
+    }'
+    ```
+  </Step>
+  
+  <Step title="Update CRDs">
+    ```bash
+    # Apply new CRD definitions
+    kubectl apply -f https://github.com/kubermatic/kubelb/releases/download/v1.0.0/crds.yaml
+    ```
+  </Step>
+  
+  <Step title="Upgrade Manager">
+    ```bash
+    helm upgrade kubelb-manager kubelb/kubelb-manager \
+      --namespace kubelb \
+      --version v1.0.0 \
+      --values values-v1.yaml \
+      --wait
+    ```
+  </Step>
+  
+  <Step title="Upgrade CCM in Tenant Clusters">
+    ```bash
+    # For each tenant cluster
+    helm upgrade kubelb-ccm kubelb/kubelb-ccm \
+      --namespace kube-system \
+      --version v1.0.0 \
+      --values values-v1.yaml \
+      --wait
+    ```
+  </Step>
+  
+  <Step title="Verify Migration">
+    ```bash
+    # Check for deprecated warnings
+    kubectl -n kubelb logs -l app=kubelb-manager --tail=100 | grep -i deprecat
+    
+    # Verify LoadBalancer resources
+    kubectl get loadbalancers -A
+    
+    # Test service creation
+    kubectl create deployment test --image=nginx
+    kubectl expose deployment test --type=LoadBalancer --port=80
+    kubectl get svc test --watch
+    ```
+  </Step>
+</Steps>
+
+### Upgrading Gateway API Support
+
+When enabling or upgrading Gateway API:
+
+```bash
+# Install Gateway API CRDs
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml
+
+# Or use CCM flag to auto-install
+helm upgrade kubelb-ccm kubelb/kubelb-ccm \
+  --set ccm.flags.installGatewayAPICRDs=true \
+  --set ccm.flags.gatewayAPICRDsChannel=standard
+
+# Enable Gateway API in Manager
+helm upgrade kubelb-manager kubelb/kubelb-manager \
+  --set manager.flags.enableGatewayAPI=true
+
+# Enable Gateway API in CCM
+helm upgrade kubelb-ccm kubelb/kubelb-ccm \
+  --set ccm.flags.enableGatewayAPI=true
+```
+
+### Upgrading Envoy Gateway
+
+KubeLB uses Envoy Gateway for Layer 7 routing. To upgrade Envoy Gateway:
+
+```bash
+# Check current version
+kubectl -n kubelb get deployment envoy-gateway -o jsonpath='{.spec.template.spec.containers[0].image}'
+
+# Upgrade via Helm (if managed by KubeLB)
+helm upgrade kubelb-manager kubelb/kubelb-manager \
+  --set envoyGateway.version=v1.3.0
+
+# Or manually upgrade Envoy Gateway
+helm upgrade envoy-gateway oci://docker.io/envoyproxy/gateway-helm \
+  --version v1.3.0 \
+  --namespace kubelb
+```
+
+## Rollback Procedure
+
+If issues occur during upgrade:
+
+<Tabs>
+  <Tab title="Helm Rollback">
+    ```bash
+    # List release history
+    helm history kubelb-manager -n kubelb
+    
+    # Rollback to previous version
+    helm rollback kubelb-manager <revision> -n kubelb --wait
+    
+    # Verify rollback
+    kubectl -n kubelb get pods
+    kubectl -n kubelb logs -l app=kubelb-manager --tail=50
+    ```
+  </Tab>
+  
+  <Tab title="Manual Rollback">
+    ```bash
+    # Rollback deployment
+    kubectl -n kubelb rollout undo deployment/kubelb-manager
+    
+    # Wait for rollback to complete
+    kubectl -n kubelb rollout status deployment/kubelb-manager
+    
+    # Verify pods are healthy
+    kubectl -n kubelb get pods
+    ```
+  </Tab>
+  
+  <Tab title="Full Restoration">
+    ```bash
+    # Restore from backup
+    kubectl apply -f config-backup.yaml
+    kubectl apply -f loadbalancers-backup.yaml
+    kubectl apply -f routes-backup.yaml
+    
+    # Reinstall previous version
+    helm uninstall kubelb-manager -n kubelb
+    helm install kubelb-manager kubelb/kubelb-manager \
+      --version <previous-version> \
+      --namespace kubelb \
+      --values values.yaml
+    ```
+  </Tab>
+</Tabs>
+
+## Deprecation Timeline
+
+Features scheduled for deprecation:
+
+| Feature | Deprecated In | Removal Planned | Alternative |
+|---------|---------------|-----------------|-------------|
+| `dedicated` topology | v0.15.0 | v2.0.0 | Use `shared` topology |
+| `global` topology | v0.15.0 | v2.0.0 | Use `shared` topology |
+| `--enable-tenant-migration` flag | v1.0.0 | Removed | No longer needed |
+
+<Info>
+Deprecated features continue to work with warnings until the removal version. Plan migrations accordingly.
+</Info>
+
+## Automation and CI/CD
+
+Integrate KubeLB upgrades into your deployment pipeline:
+
+<CodeGroup>
+```yaml GitHub Actions
+name: Upgrade KubeLB
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'KubeLB version to upgrade to'
+        required: true
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v1
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+      
+      - name: Backup resources
+        run: |
+          kubectl get config -n kubelb default -o yaml > config-backup.yaml
+          kubectl get loadbalancers -A -o yaml > lb-backup.yaml
+      
+      - name: Upgrade Manager
+        run: |
+          helm upgrade kubelb-manager kubelb/kubelb-manager \
+            --namespace kubelb \
+            --version ${{ github.event.inputs.version }} \
+            --wait --timeout 10m
+      
+      - name: Verify upgrade
+        run: |
+          kubectl -n kubelb rollout status deployment/kubelb-manager
+          kubectl -n kubelb get pods
+```
+
+```yaml ArgoCD Application
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kubelb-manager
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://charts.kubermatic.com/kubelb'
+    chart: kubelb-manager
+    targetRevision: v1.0.0  # Update this for upgrades
+    helm:
+      values: |
+        # Your values here
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: kubelb
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+```
+</CodeGroup>
+
+## Best Practices
+
+<AccordionGroup>
+<Accordion title="Upgrade Frequency">
+- **Patch versions**: Apply promptly (security fixes, bug fixes)
+- **Minor versions**: Plan quarterly upgrades
+- **Major versions**: Schedule during maintenance windows with thorough testing
+</Accordion>
+
+<Accordion title="Testing Strategy">
+1. Test upgrades in dev/staging environments first
+2. Perform canary upgrades (one tenant cluster at a time)
+3. Monitor metrics and logs during upgrade
+4. Keep rollback plan ready
+5. Document any issues for future upgrades
+</Accordion>
+
+<Accordion title="Communication">
+- Notify teams before major upgrades
+- Schedule upgrades during low-traffic periods
+- Prepare incident response plan
+- Document upgrade procedure for your environment
+</Accordion>
+
+<Accordion title="Monitoring During Upgrade">
+```bash
+# Watch pods during upgrade
+watch kubectl -n kubelb get pods
+
+# Monitor metrics
+watch "curl -s localhost:9443/metrics | grep reconcile_total"
+
+# Track errors
+kubectl -n kubelb logs -l app=kubelb-manager -f | grep -i error
+```
+</Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="sliders" href="/operations/configuration">
+    Review new configuration options after upgrade
+  </Card>
+  <Card title="Monitoring" icon="chart-line" href="/operations/monitoring">
+    Update alerts and dashboards for new metrics
+  </Card>
+</CardGroup>

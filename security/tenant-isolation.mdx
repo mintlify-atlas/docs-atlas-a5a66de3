@@ -1,0 +1,441 @@
+---
+title: Tenant Isolation
+description: How KubeLB isolates tenants using namespaces and RBAC
+---
+
+KubeLB implements strict tenant isolation to ensure that multiple tenant clusters can safely share a centralized load balancing infrastructure without security risks.
+
+## Isolation Model
+
+### Namespace-Based Separation
+
+Each tenant is assigned a dedicated namespace following the naming pattern:
+
+```
+tenant-{tenant-name}
+```
+
+For example, a tenant named `production` would have the namespace `tenant-production`. This namespace contains:
+
+- LoadBalancer resources
+- Route resources (Ingress/Gateway API)
+- SyncSecret resources
+- Service account and RBAC resources
+- Tenant kubeconfig secret
+
+<Info>
+Namespaces are automatically created and managed by the Tenant controller. Each namespace has an owner reference to its parent Tenant resource.
+</Info>
+
+Reference: `internal/controllers/kubelb/tenant_controller.go:178`
+
+### Cluster-Scoped Tenant Resource
+
+The Tenant CRD itself is cluster-scoped, allowing platform administrators to manage tenants centrally while enforcing namespace-level isolation for tenant workloads.
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Tenant
+metadata:
+  name: production
+spec:
+  loadBalancer:
+    class: "default"
+  ingress:
+    class: "nginx"
+  gatewayAPI:
+    class: "envoy-gateway"
+```
+
+## RBAC Configuration
+
+### Manager Permissions
+
+The KubeLB manager runs with cluster-wide permissions defined in the `kubelb` ClusterRole:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubelb
+rules:
+# Tenant management
+- apiGroups:
+  - kubelb.k8c.io
+  resources:
+  - tenants
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+
+# Namespace isolation
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+
+# Service account management
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+
+# RBAC management
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - roles
+  - rolebindings
+  verbs:
+  - bind
+  - create
+  - delete
+  - escalate
+  - get
+  - list
+  - patch
+  - update
+  - watch
+```
+
+<Warning>
+The manager requires `bind` and `escalate` permissions on RBAC resources to create tenant-specific roles. This is necessary for proper tenant isolation.
+</Warning>
+
+Full configuration: `config/rbac/role.yaml`
+
+### Tenant CCM Permissions
+
+Each tenant receives a namespace-scoped Role with limited permissions:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubelb-ccm
+  namespace: tenant-{name}
+rules:
+# LoadBalancer and Route management
+- apiGroups:
+  - kubelb.k8c.io
+  resources:
+  - loadbalancers
+  - routes
+  - addresses
+  - syncsecrets
+  verbs:
+  - create
+  - update
+  - get
+  - list
+  - delete
+  - patch
+  - watch
+
+# Status updates
+- apiGroups:
+  - kubelb.k8c.io
+  resources:
+  - loadbalancers/status
+  - routes/status
+  - addresses/status
+  - syncsecrets/status
+  verbs:
+  - update
+  - get
+  - patch
+
+# Read-only tenant state access
+- apiGroups:
+  - kubelb.k8c.io
+  resources:
+  - tenantstates
+  verbs:
+  - get
+  - list
+  - watch
+
+- apiGroups:
+  - kubelb.k8c.io
+  resources:
+  - tenantstates/status
+  verbs:
+  - get
+```
+
+Reference: `internal/controllers/kubelb/resources/tenant/rbac.go:43`
+
+<Note>
+Tenant CCM permissions are strictly scoped to the tenant's namespace. Cross-tenant access is impossible with these permissions.
+</Note>
+
+### Service Account Binding
+
+Each tenant namespace includes a RoleBinding connecting the service account to the role:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubelb-ccm
+  namespace: tenant-{name}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubelb-ccm
+subjects:
+- kind: ServiceAccount
+  name: kubelb-ccm
+  namespace: tenant-{name}
+```
+
+Reference: `internal/controllers/kubelb/resources/tenant/rbac.go:90`
+
+### User Access Roles
+
+KubeLB provides two ClusterRoles for end-user access:
+
+#### LoadBalancer Viewer Role
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: loadbalancer-viewer-role
+rules:
+- apiGroups:
+  - kubelb.k8c.io
+  resources:
+  - loadbalancers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - kubelb.k8c.io
+  resources:
+  - loadbalancers/status
+  verbs:
+  - get
+```
+
+Use this role for users who need read-only access to LoadBalancer resources.
+
+Full configuration: `config/rbac/loadbalancer_viewer_role.yaml`
+
+#### LoadBalancer Editor Role
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: loadbalancer-editor-role
+rules:
+- apiGroups:
+  - kubelb.k8c.io
+  resources:
+  - loadbalancers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - kubelb.k8c.io
+  resources:
+  - loadbalancers/status
+  verbs:
+  - get
+```
+
+Use this role for users who need to create and modify LoadBalancer resources.
+
+Full configuration: `config/rbac/loadbalancer_editor_role.yaml`
+
+<Info>
+Bind these ClusterRoles to specific users or groups with RoleBindings scoped to tenant namespaces for fine-grained access control.
+</Info>
+
+## Tenant Lifecycle
+
+### Tenant Creation
+
+When a Tenant resource is created, the controller automatically provisions:
+
+1. Dedicated namespace (`tenant-{name}`)
+2. Service account (`kubelb-ccm`)
+3. Role with namespace-scoped permissions
+4. RoleBinding connecting the service account to the role
+5. Service account token secret
+6. Kubeconfig secret for CCM authentication
+
+All resources include owner references to the Tenant, ensuring automatic cleanup on deletion.
+
+Reference: `internal/controllers/kubelb/tenant_controller.go:170`
+
+### Tenant Deletion
+
+When a Tenant is deleted, the controller uses a finalizer (`kubelb.k8c.io/lb-finalizer`) to ensure proper cleanup:
+
+1. Delete all LoadBalancers in the tenant namespace
+2. Delete all Routes in the tenant namespace
+3. Delete all SyncSecrets in the tenant namespace
+4. Wait for all resources to be fully removed
+5. Delete the tenant namespace
+6. Remove the finalizer and delete the Tenant resource
+
+<Warning>
+Tenant deletion is irreversible. All LoadBalancers, Routes, and SyncSecrets in the tenant namespace will be permanently deleted.
+</Warning>
+
+Reference: `internal/controllers/kubelb/tenant_controller.go:370`
+
+## Authentication Flow
+
+### Kubeconfig Generation
+
+The Tenant controller generates a kubeconfig for each tenant with:
+
+```yaml
+apiVersion: v1
+kind: Config
+clusters:
+- name: kubelb-cluster
+  cluster:
+    certificate-authority-data: <base64-encoded-ca>
+    server: <kubelb-api-server-url>
+contexts:
+- name: default-context
+  context:
+    cluster: kubelb-cluster
+    namespace: tenant-{name}
+    user: default-user
+current-context: default-context
+users:
+- name: default-user
+  user:
+    token: <service-account-token>
+```
+
+<Info>
+The kubeconfig is namespace-scoped, automatically directing all API requests to the tenant's isolated namespace.
+</Info>
+
+Reference: `internal/controllers/kubelb/tenant_controller.go:67`
+
+### Token Scoping
+
+Service account tokens are scoped to the tenant namespace, providing:
+
+- Automatic namespace targeting for all API requests
+- No ability to list or access other tenant namespaces
+- Time-limited validity (managed by Kubernetes)
+
+## Resource Ownership
+
+### Owner References
+
+All tenant resources include owner references to ensure:
+
+```yaml
+metadata:
+  ownerReferences:
+  - apiVersion: kubelb.k8c.io/v1alpha1
+    kind: Tenant
+    name: production
+    uid: <tenant-uid>
+```
+
+Benefits:
+- Automatic garbage collection when the tenant is deleted
+- Clear resource lineage for auditing
+- Prevention of orphaned resources
+
+Reference: `internal/controllers/kubelb/tenant_controller.go:171`
+
+## Security Best Practices
+
+### Tenant Naming
+
+<Warning>
+Use consistent, predictable tenant names. Changing tenant names requires recreating the tenant and migrating all resources.
+</Warning>
+
+### Access Control
+
+1. **Principle of Least Privilege**: Grant only the minimum necessary permissions
+2. **Use Viewer Roles**: Default to viewer roles for users who only need read access
+3. **Audit Regularly**: Review service account usage and permissions periodically
+4. **Rotate Tokens**: Service account tokens should be rotated regularly (handled automatically by Kubernetes)
+
+### Namespace Boundaries
+
+<Info>
+Never manually create resources in tenant namespaces. Always use the CCM to propagate resources from tenant clusters.
+</Info>
+
+### Monitoring
+
+Monitor tenant activity using:
+
+- Kubernetes audit logs for API access patterns
+- RBAC authorization failures
+- Service account token usage
+- Resource creation/deletion events
+
+## Verification
+
+Verify tenant isolation is properly configured:
+
+```bash
+# Check tenant namespace exists
+kubectl get namespace tenant-production
+
+# Verify service account permissions
+kubectl auth can-i create loadbalancers \
+  --namespace tenant-production \
+  --as system:serviceaccount:tenant-production:kubelb-ccm
+
+# Check cross-tenant access (should fail)
+kubectl auth can-i list loadbalancers \
+  --namespace tenant-staging \
+  --as system:serviceaccount:tenant-production:kubelb-ccm
+
+# List all tenants (requires cluster admin)
+kubectl get tenants
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Secret Management" icon="key" href="/security/secret-management">
+    Learn about secure secret propagation with SyncSecret
+  </Card>
+  <Card title="Security Overview" icon="shield" href="/security/overview">
+    Review the complete security model
+  </Card>
+</CardGroup>

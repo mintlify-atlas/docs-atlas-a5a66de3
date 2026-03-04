@@ -1,122 +1,126 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "KubeLB",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#f5e6de",
+    "light": "#8c7c7c",
+    "dark": "#4f4a47"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "https://media.brand.dev/47da1ba6-c5e6-47f9-9673-c49d1c75d86d.png",
+  "logo": {
+    "light": "https://media.brand.dev/47da1ba6-c5e6-47f9-9673-c49d1c75d86d.png",
+    "dark": "https://media.brand.dev/47da1ba6-c5e6-47f9-9673-c49d1c75d86d.png"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/kubermatic/kubelb"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/kubermatic/kubelb"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Overview",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "architecture",
+              "quickstart"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Installation",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "installation/prerequisites",
+              "installation/manager",
+              "installation/ccm",
+              "installation/verification"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "concepts/hub-and-spoke",
+              "concepts/load-balancing",
+              "concepts/tenants",
+              "concepts/envoy-topology"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Guides",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "guides/layer4-services",
+              "guides/layer7-routing",
+              "guides/ingress",
+              "guides/gateway-api",
+              "guides/multi-cluster",
+              "guides/dns-certificates"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/configuration",
+              "operations/monitoring",
+              "operations/troubleshooting",
+              "operations/upgrading"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "security/overview",
+              "security/tenant-isolation",
+              "security/secret-management"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Custom Resources",
             "pages": [
-              "api-reference/introduction"
+              "api/loadbalancer",
+              "api/route",
+              "api/tenant",
+              "api/config",
+              "api/addresses",
+              "api/syncsecret"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Controllers",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/controllers/manager",
+              "api/controllers/ccm"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Contributing",
+        "groups": [
+          {
+            "group": "Development",
+            "pages": [
+              "contributing/getting-started",
+              "contributing/architecture",
+              "contributing/testing",
+              "contributing/code-generation"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

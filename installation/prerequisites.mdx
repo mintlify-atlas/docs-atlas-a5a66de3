@@ -1,0 +1,131 @@
+---
+title: Prerequisites
+description: Requirements for installing KubeLB in management and tenant clusters
+---
+
+Before installing KubeLB, ensure your environment meets the following requirements for both the management cluster and tenant clusters.
+
+## Management Cluster Requirements
+
+The management cluster hosts the KubeLB Manager and requires:
+
+### Load Balancer Implementation
+
+The management cluster must have a working LoadBalancer service implementation. This can be:
+
+- **Cloud provider** load balancers (AWS ELB/NLB, GCP Load Balancer, Azure Load Balancer)
+- **Self-managed solutions** like [MetalLB](https://metallb.universe.tf/) for bare-metal or on-premise environments
+
+<Note>
+  The LoadBalancer implementation is critical as KubeLB uses it to expose services to external traffic.
+</Note>
+
+### Network Access
+
+The management cluster must have:
+
+- Network connectivity to tenant cluster nodes on the NodePort range (default: 30000-32767)
+- This allows the Envoy proxy to route traffic to tenant cluster services
+
+### Kubernetes Version
+
+KubeLB Manager supports Kubernetes 1.23 and later.
+
+### Resource Requirements
+
+Minimum resources for KubeLB Manager:
+
+- **CPU**: 100m (requests), 500m (limits)
+- **Memory**: 128Mi (requests), 512Mi (limits)
+- **Storage**: Minimal (only for container images)
+
+### Namespace
+
+Create a dedicated namespace for KubeLB Manager:
+
+```bash
+kubectl create namespace kubelb
+```
+
+## Tenant Cluster Requirements
+
+Each tenant cluster that needs load balancing services requires:
+
+### Management Cluster Access
+
+The tenant cluster must be able to communicate with the management cluster's Kubernetes API server. You'll need:
+
+- A kubeconfig file with access to the management cluster
+- Appropriate RBAC permissions to create and manage LoadBalancer and Route CRDs
+
+### Tenant Registration
+
+Each tenant cluster must be registered with the management cluster using a unique tenant name that follows [RFC 1123](https://www.rfc-editor.org/rfc/rfc1123) lowercase naming conventions.
+
+<Warning>
+  The tenant name must be unique across all tenant clusters connected to the same management cluster.
+</Warning>
+
+### Kubernetes Version
+
+KubeLB CCM supports Kubernetes 1.23 and later.
+
+### Resource Requirements
+
+Minimum resources for KubeLB CCM:
+
+- **CPU**: 100m (requests), 500m (limits)
+- **Memory**: 128Mi (requests), 512Mi (limits)
+- **Storage**: Minimal (only for container images)
+
+### Namespace
+
+Create a dedicated namespace for KubeLB CCM:
+
+```bash
+kubectl create namespace kubelb
+```
+
+## Optional Requirements
+
+### Gateway API Support
+
+If you plan to use Gateway API resources (Gateway, HTTPRoute, GRPCRoute):
+
+- Gateway API CRDs must be installed in tenant clusters
+- Enable Gateway API support in both Manager and CCM configurations
+
+### Monitoring
+
+For monitoring KubeLB components:
+
+- **Prometheus Operator** for ServiceMonitor support
+- **Grafana** with dashboard sidecar enabled for automatic dashboard provisioning
+
+## Network Architecture
+
+Understand the traffic flow in your KubeLB setup:
+
+### Layer 4 (LoadBalancer Services)
+
+```
+Client → LoadBalancer Service → Envoy Proxy → Tenant Node:NodePort → Backend Pod
+```
+
+### Layer 7 (Ingress/HTTPRoute)
+
+```
+Client → LoadBalancer Service → Envoy Proxy → Tenant Node:NodePort → Backend Pod
+```
+
+<Note>
+  Plan your network topology to ensure the management cluster can reach tenant nodes on the NodePort range.
+</Note>
+
+## Next Steps
+
+Once your environment meets these prerequisites:
+
+1. [Install KubeLB Manager](/installation/manager) in the management cluster
+2. [Install KubeLB CCM](/installation/ccm) in each tenant cluster
+3. [Verify the installation](/installation/verification) to ensure everything is working correctly

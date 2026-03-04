@@ -1,0 +1,505 @@
+---
+title: Manager Controllers
+description: API reference for KubeLB Manager controllers that run in the central management cluster
+---
+
+The KubeLB Manager runs in the central management cluster and hosts five main controllers that handle load balancer resources, routing, secrets synchronization, tenant management, and the Envoy xDS control plane.
+
+## LoadBalancer Controller
+
+### Overview
+
+The LoadBalancer controller reconciles `LoadBalancer` custom resources and manages Layer 4 load balancing services in the management cluster.
+
+**Controller Name:** `loadbalancer-controller`
+
+**Location:** `internal/controllers/kubelb/loadbalancer_controller.go:68`
+
+### What It Does
+
+- Creates and manages Kubernetes Services (LoadBalancer type) for L4 traffic
+- Allocates unique NodePorts for each load balancer endpoint
+- Configures hostname-based load balancing via Ingress or HTTPRoute resources
+- Performs health checks for DNS resolution and TLS endpoints
+- Synchronizes load balancer status back to tenant clusters
+- Manages service annotations and labels based on tenant/global configuration
+
+### Resources Watched
+
+<AccordionGroup>
+  <Accordion title="LoadBalancer (kubelb.k8c.io/v1alpha1)">
+    Primary resource - watches for creation, updates, and deletion of LoadBalancer resources in tenant namespaces.
+  </Accordion>
+  
+  <Accordion title="Service (core/v1)">
+    Watches Services with the label `kubelb.k8c.io/loadbalancer-name` to track status changes and propagate them back to LoadBalancer resources.
+  </Accordion>
+  
+  <Accordion title="Config (kubelb.k8c.io/v1alpha1)">
+    Watches the global Config resource to trigger reconciliation when global settings change (annotations, load balancer class, DNS settings, etc.).
+  </Accordion>
+  
+  <Accordion title="Tenant (kubelb.k8c.io/v1alpha1)">
+    Watches Tenant resources to trigger reconciliation when tenant-specific settings change.
+  </Accordion>
+</AccordionGroup>
+
+### Reconciliation Behavior
+
+1. **Validation**: Ensures LoadBalancer has at least one endpoint defined
+2. **Tenant/Config Lookup**: Retrieves tenant and global configuration
+3. **Reconcilability Check**: Verifies L4 load balancing is enabled at both tenant and global levels
+4. **Finalizer Management**: Adds `kubelb.k8c.io/cleanup` finalizer for cleanup coordination
+5. **Port Allocation**: Allocates unique NodePorts via the PortAllocator
+6. **Service Creation/Update**: Creates or updates the Kubernetes Service with:
+   - Proper selector labels pointing to the Envoy proxy pods
+   - Port mappings (LoadBalancer ports to allocated NodePorts)
+   - Load balancer class (if specified in Tenant or Config)
+   - Annotations from tenant/global configuration
+7. **Hostname Configuration** (if enabled):
+   - Generates or uses specified hostname
+   - Creates either an Ingress or HTTPRoute resource for hostname routing
+   - Performs DNS resolution health checks
+   - Performs TLS endpoint health checks
+8. **Status Update**: Updates LoadBalancer status with:
+   - Service port mappings
+   - Load balancer ingress IPs/hostnames
+   - Hostname status (if configured)
+
+### Cleanup Process
+
+1. Deallocates ports from the PortAllocator
+2. Deletes hostname resources (Ingress or HTTPRoute)
+3. Deletes the Kubernetes Service
+4. Removes all finalizers
+
+### RBAC Permissions
+
+```yaml
+# LoadBalancer resources
+- apiGroups: ["kubelb.k8c.io"]
+  resources: ["loadbalancers", "loadbalancers/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Config resources
+- apiGroups: ["kubelb.k8c.io"]
+  resources: ["configs", "configs/status"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+
+# Addresses resources
+- apiGroups: ["kubelb.k8c.io"]
+  resources: ["addresses", "addresses/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Core resources
+- apiGroups: [""]
+  resources: ["services", "namespaces"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Workload resources
+- apiGroups: ["apps"]
+  resources: ["deployments", "daemonsets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+```
+
+---
+
+## Route Controller
+
+### Overview
+
+The Route controller reconciles `Route` custom resources that represent Layer 7 routing configurations (Ingress, Gateway API resources).
+
+**Controller Name:** `route-controller`
+
+**Location:** `internal/controllers/kubelb/route_controller.go:64`
+
+### What It Does
+
+- Manages Layer 7 routing resources (Ingress, Gateway, HTTPRoute, GRPCRoute)
+- Creates NodePort services for backend pods in the management cluster
+- Allocates unique NodePorts for each service endpoint
+- Propagates status from management cluster back to Route resources
+- Handles cleanup of orphaned services when routes change
+
+### Resources Watched
+
+<AccordionGroup>
+  <Accordion title="Route (kubelb.k8c.io/v1alpha1)">
+    Primary resource - watches Routes with generation changes (spec updates only).
+  </Accordion>
+  
+  <Accordion title="Config (kubelb.k8c.io/v1alpha1)">
+    Watches global configuration changes to trigger route reconciliation.
+  </Accordion>
+  
+  <Accordion title="Tenant (kubelb.k8c.io/v1alpha1)">
+    Watches tenant-specific configuration changes.
+  </Accordion>
+  
+  <Accordion title="Ingress (networking.k8s.io/v1)">
+    Owns Ingress resources created from Route specs.
+  </Accordion>
+  
+  <Accordion title="Gateway (gateway.networking.k8s.io/v1)">
+    Owns Gateway resources (if Gateway API is enabled).
+  </Accordion>
+  
+  <Accordion title="HTTPRoute (gateway.networking.k8s.io/v1)">
+    Owns HTTPRoute resources (if Gateway API is enabled).
+  </Accordion>
+  
+  <Accordion title="GRPCRoute (gateway.networking.k8s.io/v1)">
+    Owns GRPCRoute resources (if Gateway API is enabled).
+  </Accordion>
+</AccordionGroup>
+
+### Reconciliation Behavior
+
+1. **Tenant/Config Lookup**: Retrieves tenant and global configuration
+2. **Resource Type Detection**: Determines route type (Ingress/Gateway/HTTPRoute/GRPCRoute)
+3. **Reconcilability Check**: Verifies the corresponding feature is enabled:
+   - For Ingress: checks if Ingress is enabled
+   - For Gateway API: checks if Gateway API is enabled
+   - For Gateway: validates the gateway name is "kubelb"
+4. **Finalizer Management**: Adds `kubelb.k8c.io/cleanup` finalizer
+5. **Service Management**:
+   - Allocates NodePorts for all referenced services
+   - Creates/updates NodePort services in the management cluster
+   - Cleans up orphaned services no longer referenced
+   - Cleans up services from old naming scheme
+6. **Route Resource Management**:
+   - Creates or updates the routing resource (Ingress/Gateway/HTTPRoute/GRPCRoute)
+   - Sets owner references for proper cleanup
+   - Transforms service references to point to management cluster services
+7. **Status Propagation**: Reads status from created resources and updates Route status
+
+### Cleanup Process
+
+1. Deletes all NodePort services created for the route
+2. Deallocates ports from the PortAllocator
+3. Removes finalizer (routes are deleted via owner references)
+
+### RBAC Permissions
+
+```yaml
+# Route resources
+- apiGroups: ["kubelb.k8c.io"]
+  resources: ["routes", "routes/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Ingress resources
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses", "ingresses/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Gateway API resources
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources: ["gateways", "gateways/status", "httproutes", "httproutes/status", "grpcroutes", "grpcroutes/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+```
+
+---
+
+## EnvoyCP Controller
+
+### Overview
+
+The EnvoyCP (Envoy Control Plane) controller manages the Envoy xDS (discovery service) configuration and Envoy proxy deployments/daemonsets.
+
+**Controller Name:** `envoy-cp-controller`
+
+**Location:** `internal/controllers/kubelb/envoy_cp_controller.go:60`
+
+### What It Does
+
+- Generates and updates Envoy xDS snapshots with cluster, listener, endpoint, route, and secret configurations
+- Manages Envoy proxy Deployment or DaemonSet resources
+- Configures graceful shutdown for Envoy proxies using a shutdown manager sidecar
+- Handles Envoy bootstrap configuration generation
+- Tracks snapshot versions and ensures consistency before applying updates
+
+### Resources Watched
+
+<AccordionGroup>
+  <Accordion title="LoadBalancer (kubelb.k8c.io/v1alpha1)">
+    Primary resource - triggers snapshot regeneration when LoadBalancers change.
+  </Accordion>
+  
+  <Accordion title="Route (kubelb.k8c.io/v1alpha1)">
+    Watches Routes to trigger snapshot updates for L7 routing changes.
+  </Accordion>
+  
+  <Accordion title="Addresses (kubelb.k8c.io/v1alpha1)">
+    Watches Addresses resources to update endpoint configurations when node addresses change.
+  </Accordion>
+  
+  <Accordion title="Config (kubelb.k8c.io/v1alpha1)">
+    Watches Config changes that affect Envoy proxy configuration (image, resources, topology, graceful shutdown settings).
+  </Accordion>
+  
+  <Accordion title="Tenant (kubelb.k8c.io/v1alpha1)">
+    Watches Tenant changes that affect Envoy configuration (e.g., ingress class).
+  </Accordion>
+</AccordionGroup>
+
+### Reconciliation Behavior
+
+1. **Config Retrieval**: Fetches latest Config to use for Envoy configuration
+2. **Resource Listing**: Lists all LoadBalancers and Routes in the tenant namespace
+3. **Cleanup Check**: If no LoadBalancers or Routes exist:
+   - Clears the Envoy snapshot from cache
+   - Deletes the Envoy proxy Deployment/DaemonSet
+4. **Envoy Proxy Management**: Creates or updates Envoy proxy Deployment/DaemonSet with:
+   - Configured image (or default `envoyproxy/envoy:distroless-v1.36.4`)
+   - Bootstrap configuration via command-line args
+   - Readiness, liveness, and startup probes
+   - Optional graceful shutdown manager sidecar
+   - Resource limits/requests from Config
+   - Affinity, tolerations, node selector from Config
+   - Optional single-pod-per-node topology spread
+5. **Port Allocation**: Allocates ports for all LoadBalancers and Routes
+6. **Snapshot Generation**: Creates Envoy xDS snapshot with:
+   - Clusters (upstream endpoints)
+   - Listeners (ingress points)
+   - Endpoints (backend node addresses)
+   - Routes (L7 routing rules)
+   - Secrets (TLS certificates)
+7. **Snapshot Update**: Updates the Envoy cache with new snapshot after consistency check
+
+### Configuration Options
+
+The controller uses settings from the `Config` resource's `spec.envoyProxy` section:
+
+- `image`: Custom Envoy image (default: `envoyproxy/envoy:distroless-v1.36.4`)
+- `useDaemonset`: Deploy as DaemonSet instead of Deployment (default: false)
+- `replicas`: Number of replicas for Deployment mode (default: 3)
+- `resources`: Resource requests/limits for Envoy container
+- `affinity`: Pod affinity/anti-affinity rules
+- `tolerations`: Pod tolerations
+- `nodeSelector`: Node selector for pod placement
+- `singlePodPerNode`: Enable topology spread to distribute one pod per node
+- `gracefulShutdown`: Graceful shutdown configuration:
+  - `disabled`: Disable graceful shutdown (default: false)
+  - `drainTimeout`: Time to drain connections (default: 30s)
+  - `terminationGracePeriodSeconds`: Pod termination grace period (default: 60s)
+  - `shutdownManagerImage`: Shutdown manager sidecar image
+
+### RBAC Permissions
+
+```yaml
+# LoadBalancer resources
+- apiGroups: ["kubelb.k8c.io"]
+  resources: ["loadbalancers", "loadbalancers/status"]
+  verbs: ["get", "list", "watch"]
+```
+
+---
+
+## SyncSecret Controller
+
+### Overview
+
+The SyncSecret controller converts `SyncSecret` custom resources into standard Kubernetes `Secret` resources in the management cluster.
+
+**Controller Name:** `sync-secret-controller`
+
+**Location:** `internal/controllers/kubelb/sync_secret_controller.go:46`
+
+### What It Does
+
+- Synchronizes secrets from tenant clusters to the management cluster
+- Creates Kubernetes Secrets with randomized names (using SyncSecret UID)
+- Maintains secret data, type, labels, and annotations
+- Sets owner references for automatic cleanup
+
+### Resources Watched
+
+<AccordionGroup>
+  <Accordion title="SyncSecret (kubelb.k8c.io/v1alpha1)">
+    Primary resource - watches for SyncSecret creation, updates, and deletion.
+  </Accordion>
+</AccordionGroup>
+
+### Reconciliation Behavior
+
+1. **Finalizer Management**: Adds `kubelb.k8c.io/cleanup` finalizer
+2. **Secret Creation**: Creates a Kubernetes Secret with:
+   - Name set to the SyncSecret's UID (for uniqueness)
+   - Namespace matching the SyncSecret
+   - Data and StringData from SyncSecret spec
+   - Type from SyncSecret spec
+   - Labels and annotations from SyncSecret
+   - Owner reference pointing to the SyncSecret
+3. **Secret Update**: Updates existing Secret if data, type, labels, or annotations change
+
+### Cleanup Process
+
+1. Deletes the associated Kubernetes Secret
+2. Removes finalizer from SyncSecret
+
+### RBAC Permissions
+
+```yaml
+# SyncSecret resources
+- apiGroups: ["kubelb.k8c.io"]
+  resources: ["syncsecrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Secret resources
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+```
+
+---
+
+## Tenant Controller
+
+### Overview
+
+The Tenant controller manages tenant isolation and provides each tenant with a dedicated namespace and credentials to communicate with the management cluster.
+
+**Controller Name:** `tenant-controller`
+
+**Location:** `internal/controllers/kubelb/tenant_controller.go:87`
+
+### What It Does
+
+- Creates dedicated namespaces for each tenant (format: `tenant-{name}`)
+- Sets up RBAC (ServiceAccount, Role, RoleBinding) for tenant access
+- Generates kubeconfig files for tenants to access their namespace
+- Creates TenantState resources tracking tenant configuration status
+- Handles cleanup of all tenant resources on deletion
+
+### Resources Watched
+
+<AccordionGroup>
+  <Accordion title="Tenant (kubelb.k8c.io/v1alpha1)">
+    Primary resource - watches for Tenant creation, updates, and deletion.
+  </Accordion>
+</AccordionGroup>
+
+### Reconciliation Behavior
+
+1. **Finalizer Management**: Adds `kubelb.k8c.io/cleanup` finalizer
+2. **Namespace Creation**: Creates namespace named `tenant-{tenantName}` with owner reference
+3. **RBAC Setup**:
+   - Creates ServiceAccount for tenant operations
+   - Creates Role with permissions to manage LoadBalancers, Routes, and SyncSecrets
+   - Creates RoleBinding linking ServiceAccount to Role
+   - Creates Secret with ServiceAccount token
+4. **Kubeconfig Generation**:
+   - Retrieves ServiceAccount token and CA certificate
+   - Determines Kubernetes API server URL (from cluster-info ConfigMap or endpoints)
+   - Generates kubeconfig with tenant namespace context
+   - Stores kubeconfig in a Secret in the tenant namespace
+5. **TenantState Management**:
+   - Creates/updates TenantState resource with current configuration
+   - Tracks version information
+   - Records enabled/disabled features (LoadBalancer, Ingress, Gateway API)
+
+### Cleanup Process
+
+When a Tenant is deleted:
+
+1. Deletes all Routes in tenant namespace
+2. Deletes all LoadBalancers in tenant namespace
+3. Deletes all SyncSecrets in tenant namespace
+4. Waits for all resources to be fully deleted (requeues if any remain)
+5. Deletes namespace, ServiceAccount, Role, RoleBinding, and Secrets
+6. Removes finalizer from Tenant
+
+### RBAC Permissions
+
+```yaml
+# Namespace management
+- apiGroups: [""]
+  resources: ["namespaces", "serviceaccounts", "secrets", "configmaps"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# RBAC management
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["roles", "rolebindings"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "bind", "escalate"]
+
+# Tenant resources
+- apiGroups: ["kubelb.k8c.io"]
+  resources: ["tenants", "tenants/status", "routes", "loadbalancers", "syncsecrets", "tenantstates", "tenantstates/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+```
+
+---
+
+## Manager Flags
+
+The KubeLB Manager binary (`kubelb`) supports the following command-line flags:
+
+### Core Configuration
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--listen-address` | `:8001` | Address to serve Envoy control-plane xDS API |
+| `--metrics-addr` | `:9443` | Address for Prometheus metrics endpoint |
+| `--health-probe-bind-address` | `:8081` | Address for health and readiness probes |
+| `--namespace` | `kubelb` | Namespace where the controller runs |
+| `--kubeconfig` | (empty) | Path to kubeconfig (only required if out-of-cluster) |
+
+### Feature Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enable-leader-election` | `true` | Enable leader election for high availability |
+| `--enable-gateway-api` | `false` | Enable Gateway API support (requires Gateway API CRDs) |
+| `--debug` | `false` | Enable debug mode for detailed logging |
+
+### Deprecated Flags
+
+| Flag | Status | Description |
+|------|--------|-------------|
+| `--enable-tenant-migration` | NOOP | Tenant migration controller has been deprecated and removed |
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `NAMESPACE` | Alternative to `--namespace` flag for specifying controller namespace |
+
+---
+
+## Metrics
+
+The Manager controllers expose Prometheus metrics on the configured metrics address (default `:9443`).
+
+### LoadBalancer Metrics
+
+- `kubelb_manager_loadbalancer_reconcile_total` - Total LoadBalancer reconciliations by result
+- `kubelb_manager_loadbalancer_reconcile_duration_seconds` - LoadBalancer reconciliation duration
+- `kubelb_manager_loadbalancers_total` - Current number of LoadBalancers per tenant
+
+### Route Metrics
+
+- `kubelb_manager_route_reconcile_total` - Total Route reconciliations by type and result
+- `kubelb_manager_route_reconcile_duration_seconds` - Route reconciliation duration
+- `kubelb_manager_routes_total` - Current number of Routes per tenant and type
+
+### EnvoyCP Metrics
+
+- `kubelb_manager_envoycp_reconcile_total` - Total EnvoyCP reconciliations
+- `kubelb_manager_envoycp_reconcile_duration_seconds` - EnvoyCP reconciliation duration
+- `kubelb_manager_envoycp_snapshot_updates_total` - Envoy snapshot updates per tenant
+- `kubelb_manager_envoycp_clusters` - Envoy clusters in current snapshot
+- `kubelb_manager_envoycp_listeners` - Envoy listeners in current snapshot
+- `kubelb_manager_envoycp_endpoints` - Envoy endpoints in current snapshot
+- `kubelb_manager_envoy_proxies_total` - Current number of Envoy proxy deployments
+
+### Tenant Metrics
+
+- `kubelb_manager_tenant_reconcile_total` - Total Tenant reconciliations
+- `kubelb_manager_tenant_reconcile_duration_seconds` - Tenant reconciliation duration
+- `kubelb_manager_tenants_total` - Current number of active tenants
+
+### SyncSecret Metrics
+
+- `kubelb_manager_syncsecret_reconcile_total` - Total SyncSecret reconciliations
+- `kubelb_manager_syncsecret_reconcile_duration_seconds` - SyncSecret reconciliation duration

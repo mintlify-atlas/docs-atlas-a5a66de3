@@ -1,0 +1,352 @@
+---
+title: Config
+description: API reference for the Config Custom Resource Definition
+---
+
+The Config resource represents the global configuration for the KubeLB management controller. It defines settings for Envoy Proxy, load balancing, ingress, Gateway API, DNS, and certificate management.
+
+## API Version
+
+`kubelb.k8c.io/v1alpha1`
+
+## Spec Fields
+
+### Annotation Settings
+
+<ParamField path="propagatedAnnotations" type="map[string]string">
+  Defines the list of annotations (key-value pairs) that will be propagated to the LoadBalancer service. Keep the `value` field empty in the key-value pair to allow any value.
+  
+  Tenant configuration has higher precedence than the annotations specified at the Config level.
+</ParamField>
+
+<ParamField path="propagateAllAnnotations" type="boolean">
+  Defines whether all annotations will be propagated to the LoadBalancer service. If set to true, `propagatedAnnotations` will be ignored.
+  
+  Tenant configuration has higher precedence than the value specified at the Config level.
+</ParamField>
+
+<ParamField path="defaultAnnotations" type="map[AnnotatedResource]Annotations">
+  Defines the list of annotations (key-value pairs) that will be set on the load balancing resources if not already present. A special key `all` can be used to apply the same set of annotations to all resources.
+  
+  Tenant configuration has higher precedence than the annotations specified at the Config level.
+  
+  Valid resource types: `all`, `service`, `ingress`, `gateway`, `httproute`, `grpcroute`, `tcproute`, `udproute`, `tlsroute`
+</ParamField>
+
+### Envoy Proxy Configuration
+
+<ParamField path="envoyProxy.topology" type="EnvoyProxyTopology" default="shared">
+  Defines the deployment topology for Envoy Proxy. The only supported value is `shared`.
+  
+  **DEPRECATION NOTICE**: The values `dedicated` and `global` are deprecated and will be removed in a future release. Both will now default to shared topology.
+  
+  Allowed values: `shared`, `dedicated` (deprecated), `global` (deprecated)
+  
+  Validation: Value is immutable and only allowed change is from `dedicated` or `global` to `shared`.
+</ParamField>
+
+<ParamField path="envoyProxy.useDaemonset" type="boolean" default="false">
+  Defines whether Envoy Proxy will run as daemonset. By default, Envoy Proxy will run as deployment. If set to true, `replicas` will be ignored.
+</ParamField>
+
+<ParamField path="envoyProxy.replicas" type="int32" default="3">
+  Defines the number of replicas for Envoy Proxy. This field is ignored if `useDaemonset` is set to true.
+  
+  Minimum value: 1
+</ParamField>
+
+<ParamField path="envoyProxy.singlePodPerNode" type="boolean" default="false">
+  Defines whether Envoy Proxy pods will be spread across nodes. This ensures that multiple replicas are not running on the same node.
+</ParamField>
+
+<ParamField path="envoyProxy.nodeSelector" type="map[string]string">
+  Used to select nodes to run Envoy Proxy. If specified, the node must have all the indicated labels.
+</ParamField>
+
+<ParamField path="envoyProxy.tolerations" type="[]Toleration">
+  Used to schedule Envoy Proxy pods on nodes with matching taints.
+</ParamField>
+
+<ParamField path="envoyProxy.resources" type="ResourceRequirements">
+  Defines the resource requirements for Envoy Proxy.
+</ParamField>
+
+<ParamField path="envoyProxy.resources.limits" type="map[string]Quantity">
+  Resource limits (e.g., cpu, memory).
+</ParamField>
+
+<ParamField path="envoyProxy.resources.requests" type="map[string]Quantity">
+  Resource requests (e.g., cpu, memory).
+</ParamField>
+
+<ParamField path="envoyProxy.affinity" type="Affinity">
+  Used to schedule Envoy Proxy pods on nodes with matching affinity.
+</ParamField>
+
+<ParamField path="envoyProxy.image" type="string">
+  Defines the Envoy Proxy image to use.
+</ParamField>
+
+<ParamField path="envoyProxy.gracefulShutdown" type="EnvoyProxyGracefulShutdown">
+  Defines the graceful shutdown configuration for Envoy Proxy.
+</ParamField>
+
+<ParamField path="envoyProxy.gracefulShutdown.disabled" type="boolean" default="false">
+  Controls whether graceful shutdown is disabled.
+</ParamField>
+
+<ParamField path="envoyProxy.gracefulShutdown.drainTimeout" type="Duration" default="60s">
+  Maximum time to wait for connections to drain. Must be less than `terminationGracePeriodSeconds`.
+</ParamField>
+
+<ParamField path="envoyProxy.gracefulShutdown.minDrainDuration" type="Duration" default="5s">
+  Minimum time to wait before checking connection count. This prevents premature termination.
+</ParamField>
+
+<ParamField path="envoyProxy.gracefulShutdown.terminationGracePeriodSeconds" type="int64" default="300">
+  Grace period for pod termination. Must be greater than `drainTimeout`.
+  
+  Minimum value: 30
+</ParamField>
+
+<ParamField path="envoyProxy.gracefulShutdown.shutdownManagerImage" type="string" default="docker.io/envoyproxy/gateway:v1.3.0">
+  Docker image for the shutdown-manager sidecar.
+</ParamField>
+
+<ParamField path="envoyProxy.overloadManager" type="EnvoyProxyOverloadManager">
+  Defines the overload manager configuration for Envoy XDS.
+</ParamField>
+
+<ParamField path="envoyProxy.overloadManager.enabled" type="boolean" default="false">
+  Controls whether overload manager is enabled.
+</ParamField>
+
+<ParamField path="envoyProxy.overloadManager.maxActiveDownstreamConnections" type="uint64">
+  Maximum number of active downstream connections for the Envoy.
+</ParamField>
+
+<ParamField path="envoyProxy.overloadManager.maxHeapSizeBytes" type="uint64">
+  Maximum heap size for the Envoy in bytes. On reaching the limit, the Envoy will start to reject new connections.
+</ParamField>
+
+### LoadBalancer Settings
+
+<ParamField path="loadBalancer.class" type="string">
+  Class of the load balancer to use.
+</ParamField>
+
+<ParamField path="loadBalancer.disable" type="boolean" default="false">
+  Flag that can be used to disable L4 load balancing.
+</ParamField>
+
+### Ingress Settings
+
+<ParamField path="ingress.class" type="string">
+  Class of the ingress to use.
+</ParamField>
+
+<ParamField path="ingress.disable" type="boolean" default="false">
+  Flag that can be used to disable Ingress.
+</ParamField>
+
+### Gateway API Settings
+
+<ParamField path="gatewayAPI.class" type="string">
+  Class of the gateway API to use. This can be used to specify a specific gateway API implementation.
+</ParamField>
+
+<ParamField path="gatewayAPI.defaultGateway" type="ObjectReference">
+  Default gateway reference to use. This is only used for load balancer hostname.
+</ParamField>
+
+<ParamField path="gatewayAPI.disable" type="boolean" default="false">
+  Flag that can be used to disable Gateway API.
+</ParamField>
+
+### DNS Settings
+
+<ParamField path="dns.wildcardDomain" type="string">
+  Domain that will be used as the base domain to create wildcard DNS records for DNS resources. This is only used for determining the hostname for LoadBalancer resources at `LoadBalancer.Spec.Hostname`.
+</ParamField>
+
+<ParamField path="dns.allowExplicitHostnames" type="boolean" default="false">
+  Flag that can be used to allow explicit hostnames to be used for DNS resources. This is only used when `LoadBalancer.Spec.Hostname` is set.
+</ParamField>
+
+<ParamField path="dns.useDNSAnnotations" type="boolean" default="false">
+  Flag that can be used to add DNS annotations to DNS resources. This is only used when `LoadBalancer.Spec.Hostname` is set.
+</ParamField>
+
+<ParamField path="dns.useCertificateAnnotations" type="boolean" default="false">
+  Flag that can be used to add Certificate annotations to Certificate resources. This is only used when `LoadBalancer.Spec.Hostname` is set.
+</ParamField>
+
+### Certificate Settings
+
+<ParamField path="certificates.defaultClusterIssuer" type="string">
+  The Cluster Issuer to use for the certificates by default. This is only used for load balancer hostname.
+</ParamField>
+
+## Example
+
+### Basic Config
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Config
+metadata:
+  name: kubelb-config
+spec:
+  envoyProxy:
+    topology: shared
+    replicas: 3
+    singlePodPerNode: true
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+  loadBalancer:
+    class: metallb
+  ingress:
+    class: nginx
+  gatewayAPI:
+    class: envoy
+  dns:
+    wildcardDomain: "*.lb.example.com"
+    allowExplicitHostnames: true
+  certificates:
+    defaultClusterIssuer: letsencrypt-prod
+```
+
+### Config with Daemonset
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Config
+metadata:
+  name: kubelb-config-daemonset
+spec:
+  envoyProxy:
+    topology: shared
+    useDaemonset: true
+    nodeSelector:
+      node-role.kubernetes.io/loadbalancer: "true"
+    tolerations:
+      - key: node-role.kubernetes.io/loadbalancer
+        operator: Exists
+        effect: NoSchedule
+  loadBalancer:
+    class: metallb
+  dns:
+    wildcardDomain: "*.apps.example.com"
+    useDNSAnnotations: true
+    useCertificateAnnotations: true
+```
+
+### Config with Graceful Shutdown
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Config
+metadata:
+  name: kubelb-config-graceful
+spec:
+  envoyProxy:
+    topology: shared
+    replicas: 5
+    gracefulShutdown:
+      disabled: false
+      drainTimeout: 90s
+      minDrainDuration: 10s
+      terminationGracePeriodSeconds: 360
+      shutdownManagerImage: docker.io/envoyproxy/gateway:v1.3.0
+    resources:
+      requests:
+        cpu: 1000m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+  loadBalancer:
+    class: cloud-lb
+  dns:
+    wildcardDomain: "*.prod.example.com"
+```
+
+### Config with Overload Manager
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Config
+metadata:
+  name: kubelb-config-overload
+spec:
+  envoyProxy:
+    topology: shared
+    replicas: 3
+    overloadManager:
+      enabled: true
+      maxActiveDownstreamConnections: 10000
+      maxHeapSizeBytes: 2147483648  # 2GB
+    resources:
+      requests:
+        cpu: 2000m
+        memory: 4Gi
+      limits:
+        cpu: 4000m
+        memory: 8Gi
+  loadBalancer:
+    class: metallb
+  ingress:
+    class: nginx
+  gatewayAPI:
+    class: envoy
+    defaultGateway:
+      name: shared-gateway
+      namespace: gateway-system
+```
+
+### Config with Custom Annotations
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Config
+metadata:
+  name: kubelb-config-annotations
+spec:
+  propagateAllAnnotations: false
+  propagatedAnnotations:
+    monitoring.io/scrape: "true"
+    custom.io/annotation: "value"
+  defaultAnnotations:
+    all:
+      default.io/managed-by: "kubelb"
+    service:
+      service.io/type: "loadbalancer"
+    gateway:
+      gateway.io/protocol: "https"
+  envoyProxy:
+    topology: shared
+    replicas: 3
+  loadBalancer:
+    class: metallb
+  dns:
+    wildcardDomain: "*.example.com"
+    allowExplicitHostnames: true
+    useDNSAnnotations: true
+    useCertificateAnnotations: true
+  certificates:
+    defaultClusterIssuer: letsencrypt-staging
+```
+
+## Notes
+
+- The Config resource is typically named `kubelb-config` and is used for global settings
+- Tenant-specific configuration always overrides Config-level settings
+- The `shared` topology is the only supported and recommended topology for Envoy Proxy
+- When using `useDaemonset: true`, the `replicas` field is ignored
+- Graceful shutdown settings help prevent connection drops during rolling updates
+- Overload manager helps protect Envoy from overload by limiting connections and memory usage

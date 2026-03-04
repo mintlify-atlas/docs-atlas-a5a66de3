@@ -1,0 +1,566 @@
+---
+title: CCM Controllers
+description: API reference for KubeLB CCM controllers that run in tenant clusters
+---
+
+The KubeLB CCM (Cloud Controller Manager) runs in each tenant cluster and propagates load balancer configurations to the central management cluster. It includes six main controllers for managing Services, Ingresses, Gateway API resources, and node addresses.
+
+## Service Controller
+
+### Overview
+
+The Service controller watches LoadBalancer-type Services in the tenant cluster and creates corresponding `LoadBalancer` custom resources in the management cluster.
+
+**Controller Name:** `service-controller`
+
+**Location:** `internal/controllers/ccm/service_controller.go:52`
+
+### What It Does
+
+- Watches LoadBalancer Services in the tenant cluster
+- Creates LoadBalancer resources in the management cluster
+- Propagates service status from management cluster back to tenant services
+- Handles service annotations and port configurations
+- Optionally filters services by `loadBalancerClass: kubelb`
+
+### Resources Watched
+
+<AccordionGroup>
+  <Accordion title="Service (core/v1)">
+    Watches LoadBalancer-type Services in the tenant cluster. Optionally filters by `loadBalancerClass: kubelb` if `--use-loadbalancer-class` is enabled.
+  </Accordion>
+  
+  <Accordion title="LoadBalancer (kubelb.k8c.io/v1alpha1)">
+    Watches LoadBalancer resources in the management cluster (in the tenant's namespace) to propagate status back to Services.
+  </Accordion>
+</AccordionGroup>
+
+### Reconciliation Behavior
+
+1. **Service Filtering**: Checks if service should be reconciled:
+   - Must be type LoadBalancer
+   - If `--use-loadbalancer-class` is enabled, must have `loadBalancerClass: kubelb`
+2. **Finalizer Management**: Adds `kubelb.k8c.io/cleanup` finalizer
+3. **Endpoint Determination**:
+   - If `--enable-cloud-provider=false`: Uses existing LoadBalancer ingress IPs/hostnames from another LB implementation
+   - If `--enable-cloud-provider=true`: References node addresses via Addresses resource
+4. **LoadBalancer Creation**: Creates LoadBalancer resource in management cluster with:
+   - Name: Service UID
+   - Namespace: Cluster name (tenant namespace in management cluster)
+   - Spec: Service type, ports, endpoints, external traffic policy
+   - Labels: Origin namespace and name for tracking
+5. **Status Propagation**: Updates Service status with LoadBalancer ingress from management cluster
+
+### Cleanup Process
+
+1. Deletes LoadBalancer resource from management cluster
+2. Removes finalizer from Service
+
+### Configuration Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--use-loadbalancer-class` | `false` | Filter services by `loadBalancerClass: kubelb` |
+| `--enable-cloud-provider` | `true` | Act as cloud provider and set LoadBalancer status |
+
+### RBAC Permissions
+
+```yaml
+# Service resources
+- apiGroups: [""]
+  resources: ["services", "services/status"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+```
+
+---
+
+## Ingress Controller
+
+### Overview
+
+The Ingress controller watches Ingress resources in the tenant cluster and creates corresponding `Route` custom resources in the management cluster.
+
+**Controller Name:** `ingress-controller`
+
+**Location:** `internal/controllers/ccm/ingress_controller.go:59`
+
+### What It Does
+
+- Watches Ingress resources in the tenant cluster
+- Creates NodePort Services for Ingress backend services
+- Creates Route resources in the management cluster with embedded Ingress configuration
+- Propagates Ingress status from management cluster back to tenant Ingresses
+- Optionally filters Ingresses by `ingressClassName: kubelb`
+
+### Resources Watched
+
+<AccordionGroup>
+  <Accordion title="Ingress (networking.k8s.io/v1)">
+    Watches Ingress resources. Optionally filters by `ingressClassName: kubelb` if `--use-ingress-class` is enabled.
+  </Accordion>
+  
+  <Accordion title="Service (core/v1)">
+    Watches Services referenced by Ingress backends to trigger reconciliation when they change.
+  </Accordion>
+  
+  <Accordion title="Route (kubelb.k8c.io/v1alpha1)">
+    Watches Route resources in the management cluster to propagate status back to Ingresses.
+  </Accordion>
+</AccordionGroup>
+
+### Reconciliation Behavior
+
+1. **Ingress Filtering**: Checks if Ingress should be reconciled:
+   - If `--use-ingress-class` is enabled, must have `ingressClassName: kubelb`
+2. **Finalizer Management**: Adds `kubelb.k8c.io/cleanup` finalizer
+3. **Service Discovery**: Extracts all Services referenced in Ingress backends
+4. **NodePort Service Creation**: For each referenced service:
+   - Creates a NodePort Service in tenant cluster (if not using cloud provider)
+   - Service selector points to original service pods
+   - Labels track original service name and namespace
+5. **Route Creation**: Creates Route resource in management cluster with:
+   - Name: Ingress UID
+   - Namespace: Cluster name (tenant namespace in management cluster)
+   - Spec contains:
+     - Embedded Ingress configuration (in unstructured format)
+     - List of referenced Services with their UIDs and namespaces
+6. **Status Propagation**: Updates Ingress status from Route status in management cluster
+
+### Cleanup Process
+
+1. Deletes NodePort Services created for Ingress backends
+2. Deletes Route resource from management cluster
+3. Removes finalizer from Ingress
+
+### Configuration Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--use-ingress-class` | `true` | Filter Ingresses by `ingressClassName: kubelb` |
+| `--disable-ingress-controller` | `false` | Disable the Ingress controller entirely |
+
+### RBAC Permissions
+
+```yaml
+# Ingress resources
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses", "ingresses/status"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+
+# Service resources
+- apiGroups: [""]
+  resources: ["services", "services/status"]
+  verbs: ["get", "list", "watch", "create", "patch"]
+
+# Route resources
+- apiGroups: ["kubelb.k8c.io"]
+  resources: ["routes", "routes/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+```
+
+---
+
+## Gateway Controller
+
+### Overview
+
+The Gateway controller watches Gateway API `Gateway` resources in the tenant cluster and creates corresponding `Route` custom resources in the management cluster.
+
+**Controller Name:** `gateway-controller`
+
+**Location:** `internal/controllers/ccm/gateway_controller.go:56`
+
+### What It Does
+
+- Watches Gateway resources in the tenant cluster
+- Creates Route resources in the management cluster with embedded Gateway configuration
+- Propagates Gateway status from management cluster back to tenant Gateways
+- Only reconciles Gateway named "kubelb" in Community Edition
+- Optionally filters Gateways by `gatewayClassName: kubelb`
+
+### Resources Watched
+
+<AccordionGroup>
+  <Accordion title="Gateway (gateway.networking.k8s.io/v1)">
+    Watches Gateway resources. Only reconciles Gateway named "kubelb" (CE) or filters by `gatewayClassName: kubelb` (if enabled).
+  </Accordion>
+  
+  <Accordion title="Route (kubelb.k8c.io/v1alpha1)">
+    Watches Route resources in the management cluster to propagate status back to Gateways.
+  </Accordion>
+</AccordionGroup>
+
+### Reconciliation Behavior
+
+1. **Gateway Filtering**: Checks if Gateway should be reconciled:
+   - Gateway name must be "kubelb" (Community Edition)
+   - If `--use-gateway-class` is enabled, must have `gatewayClassName: kubelb`
+2. **Finalizer Management**: Adds `kubelb.k8c.io/cleanup` finalizer
+3. **Route Creation**: Creates Route resource in management cluster with:
+   - Name: Gateway UID
+   - Namespace: Cluster name (tenant namespace in management cluster)
+   - Spec contains embedded Gateway configuration (in unstructured format)
+4. **Status Propagation**: Updates Gateway status from Route status in management cluster
+
+### Cleanup Process
+
+1. Deletes Route resource from management cluster
+2. Removes finalizer from Gateway
+
+### Configuration Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enable-gateway-api` | `false` | Enable Gateway API support |
+| `--use-gateway-class` | `true` | Filter Gateways by `gatewayClassName: kubelb` |
+| `--disable-gateway-controller` | `false` | Disable the Gateway controller |
+
+### RBAC Permissions
+
+```yaml
+# Gateway resources
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources: ["gateways", "gateways/status"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+
+# Service resources
+- apiGroups: [""]
+  resources: ["services", "services/status"]
+  verbs: ["get", "list", "watch", "create", "patch"]
+
+# Route resources
+- apiGroups: ["kubelb.k8c.io"]
+  resources: ["routes", "routes/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+```
+
+---
+
+## HTTPRoute Controller
+
+### Overview
+
+The HTTPRoute controller watches Gateway API `HTTPRoute` resources in the tenant cluster and creates corresponding `Route` custom resources in the management cluster.
+
+**Controller Name:** `gateway-httproute-controller`
+
+**Location:** `internal/controllers/ccm/gateway_httproute_controller.go:59`
+
+### What It Does
+
+- Watches HTTPRoute resources in the tenant cluster
+- Creates NodePort Services for HTTPRoute backend services
+- Creates Route resources in the management cluster with embedded HTTPRoute configuration
+- Propagates HTTPRoute status from management cluster back to tenant HTTPRoutes
+- Only reconciles HTTPRoutes attached to Gateway "kubelb"
+
+### Resources Watched
+
+<AccordionGroup>
+  <Accordion title="HTTPRoute (gateway.networking.k8s.io/v1)">
+    Watches HTTPRoute resources. Only reconciles routes with `parentRefs` pointing to Gateway "kubelb".
+  </Accordion>
+  
+  <Accordion title="Service (core/v1)">
+    Watches Services referenced by HTTPRoute backends to trigger reconciliation when they change.
+  </Accordion>
+  
+  <Accordion title="Route (kubelb.k8c.io/v1alpha1)">
+    Watches Route resources in the management cluster to propagate status back to HTTPRoutes.
+  </Accordion>
+</AccordionGroup>
+
+### Reconciliation Behavior
+
+1. **HTTPRoute Filtering**: Only reconciles HTTPRoutes with `parentRefs` pointing to Gateway "kubelb"
+2. **Finalizer Management**: Adds `kubelb.k8c.io/cleanup` finalizer
+3. **Service Discovery**: Extracts all Services referenced in HTTPRoute backends
+4. **NodePort Service Creation**: For each referenced service:
+   - Creates a NodePort Service in tenant cluster
+   - Service selector points to original service pods
+   - Labels track original service name and namespace
+5. **Route Creation**: Creates Route resource in management cluster with:
+   - Name: HTTPRoute UID
+   - Namespace: Cluster name (tenant namespace in management cluster)
+   - Spec contains:
+     - Embedded HTTPRoute configuration (in unstructured format)
+     - List of referenced Services with their UIDs and namespaces
+6. **Status Propagation**: Updates HTTPRoute status from Route status in management cluster
+
+### Cleanup Process
+
+1. Deletes NodePort Services created for HTTPRoute backends
+2. Deletes Route resource from management cluster
+3. Removes finalizer from HTTPRoute
+
+### Configuration Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enable-gateway-api` | `false` | Enable Gateway API support |
+| `--disable-httproute-controller` | `false` | Disable the HTTPRoute controller |
+
+### RBAC Permissions
+
+```yaml
+# HTTPRoute resources
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources: ["httproutes", "httproutes/status"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+
+# Service resources
+- apiGroups: [""]
+  resources: ["services", "services/status"]
+  verbs: ["get", "list", "watch", "create", "patch"]
+
+# Route resources
+- apiGroups: ["kubelb.k8c.io"]
+  resources: ["routes", "routes/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+```
+
+---
+
+## GRPCRoute Controller
+
+### Overview
+
+The GRPCRoute controller watches Gateway API `GRPCRoute` resources in the tenant cluster and creates corresponding `Route` custom resources in the management cluster.
+
+**Controller Name:** `gateway-grpcroute-controller`
+
+**Location:** `internal/controllers/ccm/gateway_grpcroute_controller.go:59`
+
+### What It Does
+
+- Watches GRPCRoute resources in the tenant cluster
+- Creates NodePort Services for GRPCRoute backend services
+- Creates Route resources in the management cluster with embedded GRPCRoute configuration
+- Propagates GRPCRoute status from management cluster back to tenant GRPCRoutes
+- Only reconciles GRPCRoutes attached to Gateway "kubelb"
+
+### Resources Watched
+
+<AccordionGroup>
+  <Accordion title="GRPCRoute (gateway.networking.k8s.io/v1)">
+    Watches GRPCRoute resources. Only reconciles routes with `parentRefs` pointing to Gateway "kubelb".
+  </Accordion>
+  
+  <Accordion title="Service (core/v1)">
+    Watches Services referenced by GRPCRoute backends to trigger reconciliation when they change.
+  </Accordion>
+  
+  <Accordion title="Route (kubelb.k8c.io/v1alpha1)">
+    Watches Route resources in the management cluster to propagate status back to GRPCRoutes.
+  </Accordion>
+</AccordionGroup>
+
+### Reconciliation Behavior
+
+1. **GRPCRoute Filtering**: Only reconciles GRPCRoutes with `parentRefs` pointing to Gateway "kubelb"
+2. **Finalizer Management**: Adds `kubelb.k8c.io/cleanup` finalizer
+3. **Service Discovery**: Extracts all Services referenced in GRPCRoute backends
+4. **NodePort Service Creation**: For each referenced service:
+   - Creates a NodePort Service in tenant cluster
+   - Service selector points to original service pods
+   - Labels track original service name and namespace
+5. **Route Creation**: Creates Route resource in management cluster with:
+   - Name: GRPCRoute UID
+   - Namespace: Cluster name (tenant namespace in management cluster)
+   - Spec contains:
+     - Embedded GRPCRoute configuration (in unstructured format)
+     - List of referenced Services with their UIDs and namespaces
+6. **Status Propagation**: Updates GRPCRoute status from Route status in management cluster
+
+### Cleanup Process
+
+1. Deletes NodePort Services created for GRPCRoute backends
+2. Deletes Route resource from management cluster
+3. Removes finalizer from GRPCRoute
+
+### Configuration Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enable-gateway-api` | `false` | Enable Gateway API support |
+| `--disable-grpcroute-controller` | `false` | Disable the GRPCRoute controller |
+
+### RBAC Permissions
+
+```yaml
+# GRPCRoute resources
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources: ["grpcroutes", "grpcroutes/status"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+
+# Service resources
+- apiGroups: [""]
+  resources: ["services", "services/status"]
+  verbs: ["get", "list", "watch", "create", "patch"]
+
+# Route resources
+- apiGroups: ["kubelb.k8c.io"]
+  resources: ["routes", "routes/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+```
+
+---
+
+## Node Controller
+
+### Overview
+
+The Node controller watches Nodes in the tenant cluster and creates/updates an `Addresses` resource in the management cluster with node endpoint addresses.
+
+**Controller Name:** `node-controller`
+
+**Location:** `internal/controllers/ccm/node_controller.go:49`
+
+### What It Does
+
+- Watches all Nodes in the tenant cluster
+- Extracts node addresses based on configured address type (ExternalIP, InternalIP, or Hostname)
+- Creates or updates the Addresses resource in the management cluster
+- Only includes ready nodes in the address list
+- Deduplicates addresses
+
+### Resources Watched
+
+<AccordionGroup>
+  <Accordion title="Node (core/v1)">
+    Watches all Node resources in the tenant cluster.
+  </Accordion>
+</AccordionGroup>
+
+### Reconciliation Behavior
+
+1. **Node Listing**: Lists all Nodes in the cluster
+2. **Address Extraction**: For each ready Node:
+   - Checks if Node has `Ready` condition set to `True`
+   - Extracts addresses matching the configured `--node-address-type`
+   - Deduplicates addresses
+   - Validates IP addresses (or allows hostnames if using NodeHostName)
+3. **Address Sorting**: Sorts addresses (IPs first, then hostnames)
+4. **Addresses Resource Update**:
+   - Creates or updates Addresses resource named `default` in management cluster
+   - Namespace: Cluster name (tenant namespace in management cluster)
+   - Spec contains sorted list of endpoint addresses
+
+### Configuration Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--node-address-type` | `ExternalIP` | Node address type to use (ExternalIP, InternalIP, or Hostname) |
+
+### RBAC Permissions
+
+```yaml
+# Node resources
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["list", "get", "watch"]
+```
+
+---
+
+## CCM Flags
+
+The KubeLB CCM binary (`ccm`) supports the following command-line flags:
+
+### Core Configuration
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--metrics-addr` | `:9445` | Address for Prometheus metrics endpoint |
+| `--health-probe-bind-address` | `:8081` | Address for health and readiness probes |
+| `--cluster-name` | (required) | Unique cluster/tenant name for resource isolation |
+| `--kubelb-kubeconfig` | `~/.kube/kubelb` | Path to KubeLB management cluster kubeconfig |
+| `--kubeconfig` | (empty) | Path to tenant cluster kubeconfig (only required if out-of-cluster) |
+| `--leader-election-namespace` | (empty) | Namespace for leader election (optional) |
+
+### Feature Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enable-leader-election` | `true` | Enable leader election for high availability |
+| `--enable-cloud-provider` | `true` | Act as cloud controller and set LoadBalancer status |
+| `--enable-gateway-api` | `false` | Enable Gateway API support |
+| `--enable-secret-synchronizer` | `false` | Enable automatic Secret to SyncSecret conversion |
+| `--install-gateway-api-crds` | `false` | Install and manage Gateway API CRDs |
+
+### Resource Filtering
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--use-loadbalancer-class` | `false` | Filter Services by `loadBalancerClass: kubelb` |
+| `--use-ingress-class` | `true` | Filter Ingresses by `ingressClassName: kubelb` |
+| `--use-gateway-class` | `true` | Filter Gateways by `gatewayClassName: kubelb` |
+
+### Controller Toggles
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--disable-ingress-controller` | `false` | Disable the Ingress controller |
+| `--disable-gateway-controller` | `false` | Disable the Gateway controller |
+| `--disable-httproute-controller` | `false` | Disable the HTTPRoute controller |
+| `--disable-grpcroute-controller` | `false` | Disable the GRPCRoute controller |
+
+### Node Configuration
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--node-address-type` | `ExternalIP` | Node address type: ExternalIP, InternalIP, or Hostname |
+
+### Gateway API CRD Management
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--gateway-api-crds-channel` | `standard` | Gateway API CRDs channel: 'standard' or 'experimental' |
+
+---
+
+## Metrics
+
+The CCM controllers expose Prometheus metrics on the configured metrics address (default `:9445`).
+
+### Service Metrics
+
+- `kubelb_ccm_service_reconcile_total` - Total Service reconciliations by result
+- `kubelb_ccm_service_reconcile_duration_seconds` - Service reconciliation duration
+- `kubelb_ccm_managed_services_total` - Current number of managed Services per namespace
+
+### Ingress Metrics
+
+- `kubelb_ccm_ingress_reconcile_total` - Total Ingress reconciliations by result
+- `kubelb_ccm_ingress_reconcile_duration_seconds` - Ingress reconciliation duration
+- `kubelb_ccm_managed_ingresses_total` - Current number of managed Ingresses per namespace
+
+### Gateway Metrics
+
+- `kubelb_ccm_gateway_reconcile_total` - Total Gateway reconciliations by result
+- `kubelb_ccm_gateway_reconcile_duration_seconds` - Gateway reconciliation duration
+- `kubelb_ccm_managed_gateways_total` - Current number of managed Gateways per namespace
+
+### HTTPRoute Metrics
+
+- `kubelb_ccm_httproute_reconcile_total` - Total HTTPRoute reconciliations by result
+- `kubelb_ccm_httproute_reconcile_duration_seconds` - HTTPRoute reconciliation duration
+- `kubelb_ccm_managed_httproutes_total` - Current number of managed HTTPRoutes per namespace
+
+### GRPCRoute Metrics
+
+- `kubelb_ccm_grpcroute_reconcile_total` - Total GRPCRoute reconciliations by result
+- `kubelb_ccm_grpcroute_reconcile_duration_seconds` - GRPCRoute reconciliation duration
+- `kubelb_ccm_managed_grpcroutes_total` - Current number of managed GRPCRoutes per namespace
+
+### Node Metrics
+
+- `kubelb_ccm_node_reconcile_total` - Total Node reconciliations by result
+- `kubelb_ccm_node_reconcile_duration_seconds` - Node reconciliation duration
+- `kubelb_ccm_nodes_total` - Current number of nodes in the cluster
+
+### KubeLB Cluster Connection
+
+- `kubelb_ccm_kubelb_cluster_connected` - KubeLB cluster connection status (1=connected, 0=disconnected)
+- `kubelb_ccm_kubelb_operations_total` - Total operations against KubeLB cluster by type and result
+- `kubelb_ccm_kubelb_operation_duration_seconds` - KubeLB operation duration by type

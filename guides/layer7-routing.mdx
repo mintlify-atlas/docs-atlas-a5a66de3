@@ -1,0 +1,657 @@
+---
+title: Layer 7 HTTP/gRPC Routing
+description: Advanced HTTP and gRPC routing with Gateway API Routes
+---
+
+KubeLB provides Layer 7 load balancing using Kubernetes Gateway API resources. This enables advanced HTTP/gRPC routing features like hostname-based routing, path matching, header manipulation, and more.
+
+## How It Works
+
+The Layer 7 routing flow works as follows:
+
+1. **Resource Creation**: You create an HTTPRoute or GRPCRoute in your tenant cluster
+2. **CCM Propagation**: KubeLB CCM watches the route and creates a corresponding `Route` CRD in the management cluster
+3. **Envoy Configuration**: KubeLB Manager configures Envoy Gateway in the management cluster
+4. **Traffic Routing**: Traffic flows through Envoy Gateway → KubeLB Envoy Proxy → tenant cluster nodes
+5. **Status Sync**: Route status (with addresses) is synced back to your tenant cluster
+
+<Note>
+KubeLB uses [Envoy Gateway](https://gateway.envoyproxy.io/) for Layer 7 routing. The Envoy Gateway is deployed in the management cluster and handles all HTTP/gRPC traffic.
+</Note>
+
+## Gateway API Resources
+
+KubeLB supports the following Gateway API resources:
+
+- **Gateway**: Defines the load balancer configuration and listeners
+- **HTTPRoute**: Routes HTTP traffic based on hostname, path, headers, etc.
+- **GRPCRoute**: Routes gRPC traffic with method matching
+
+See the [Gateway API guide](/guides/gateway-api) for detailed configuration.
+
+## HTTP Routing
+
+### Basic HTTPRoute
+
+<Steps>
+  <Step title="Create a Gateway">
+    First, create a Gateway resource:
+
+    ```yaml
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: Gateway
+    metadata:
+      name: my-gateway
+      namespace: default
+    spec:
+      gatewayClassName: kubelb
+      listeners:
+      - name: http
+        protocol: HTTP
+        port: 80
+        allowedRoutes:
+          namespaces:
+            from: All
+    ```
+  </Step>
+
+  <Step title="Deploy Backend Service">
+    Create a backend service:
+
+    ```yaml
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: api-backend
+      namespace: default
+    spec:
+      selector:
+        app: api
+      ports:
+      - port: 8080
+        targetPort: 8080
+    ---
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: api
+      namespace: default
+    spec:
+      replicas: 2
+      selector:
+        matchLabels:
+          app: api
+      template:
+        metadata:
+          labels:
+            app: api
+        spec:
+          containers:
+          - name: api
+            image: your-api:latest
+            ports:
+            - containerPort: 8080
+    ```
+  </Step>
+
+  <Step title="Create HTTPRoute">
+    Create an HTTPRoute to expose your service:
+
+    ```yaml
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+    metadata:
+      name: api-route
+      namespace: default
+    spec:
+      parentRefs:
+      - name: my-gateway
+      hostnames:
+      - "api.example.com"
+      rules:
+      - backendRefs:
+        - name: api-backend
+          port: 8080
+    ```
+  </Step>
+
+  <Step title="Get Gateway Address">
+    Wait for the Gateway to get an address:
+
+    ```bash
+    kubectl get gateway my-gateway
+    ```
+
+    Output:
+    ```
+    NAME         CLASS    ADDRESS        PROGRAMMED   AGE
+    my-gateway   kubelb   203.0.113.10   True         1m
+    ```
+  </Step>
+
+  <Step title="Test Connectivity">
+    Test the HTTP route:
+
+    ```bash
+    curl -H "Host: api.example.com" http://203.0.113.10
+    ```
+  </Step>
+</Steps>
+
+### Path-Based Routing
+
+Route traffic based on URL paths:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: path-routing
+  namespace: default
+spec:
+  parentRefs:
+  - name: my-gateway
+  hostnames:
+  - "example.com"
+  rules:
+  # Route /api/* to api-backend
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api
+    backendRefs:
+    - name: api-backend
+      port: 8080
+  # Route /web/* to web-backend
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /web
+    backendRefs:
+    - name: web-backend
+      port: 80
+  # Default route
+  - backendRefs:
+    - name: default-backend
+      port: 80
+```
+
+<Note>
+Path matches are evaluated in order. More specific paths should come first.
+</Note>
+
+### Header-Based Routing
+
+Route traffic based on HTTP headers:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: header-routing
+  namespace: default
+spec:
+  parentRefs:
+  - name: my-gateway
+  hostnames:
+  - "api.example.com"
+  rules:
+  # Route traffic with "X-Version: v2" header to v2 backend
+  - matches:
+    - headers:
+      - name: X-Version
+        value: v2
+    backendRefs:
+    - name: api-v2
+      port: 8080
+  # Default to v1
+  - backendRefs:
+    - name: api-v1
+      port: 8080
+```
+
+### Query Parameter Routing
+
+Route based on query parameters:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: query-routing
+  namespace: default
+spec:
+  parentRefs:
+  - name: my-gateway
+  rules:
+  - matches:
+    - queryParams:
+      - name: version
+        value: beta
+    backendRefs:
+    - name: beta-backend
+      port: 8080
+  - backendRefs:
+    - name: stable-backend
+      port: 8080
+```
+
+### Method-Based Routing
+
+Route based on HTTP method:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: method-routing
+  namespace: default
+spec:
+  parentRefs:
+  - name: my-gateway
+  rules:
+  # Route POST/PUT/DELETE to write service
+  - matches:
+    - method: POST
+    - method: PUT
+    - method: DELETE
+    backendRefs:
+    - name: write-service
+      port: 8080
+  # Route GET to read service
+  - matches:
+    - method: GET
+    backendRefs:
+    - name: read-service
+      port: 8080
+```
+
+## Traffic Splitting
+
+Split traffic between multiple backends for canary deployments:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: canary-routing
+  namespace: default
+spec:
+  parentRefs:
+  - name: my-gateway
+  hostnames:
+  - "api.example.com"
+  rules:
+  - backendRefs:
+    # 90% to stable version
+    - name: api-stable
+      port: 8080
+      weight: 90
+    # 10% to canary version
+    - name: api-canary
+      port: 8080
+      weight: 10
+```
+
+## Header Manipulation
+
+### Add Request Headers
+
+Add headers to requests:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: add-headers
+  namespace: default
+spec:
+  parentRefs:
+  - name: my-gateway
+  rules:
+  - filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        add:
+        - name: X-Custom-Header
+          value: custom-value
+        - name: X-Request-ID
+          value: "%REQ(X-REQUEST-ID)%"
+    backendRefs:
+    - name: api-backend
+      port: 8080
+```
+
+### Remove/Set Headers
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: modify-headers
+  namespace: default
+spec:
+  parentRefs:
+  - name: my-gateway
+  rules:
+  - filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: X-Forwarded-Proto
+          value: https
+        remove:
+        - X-Internal-Header
+    - type: ResponseHeaderModifier
+      responseHeaderModifier:
+        add:
+        - name: X-Response-Time
+          value: "%RESPONSE_DURATION%"
+    backendRefs:
+    - name: api-backend
+      port: 8080
+```
+
+## URL Rewriting
+
+Rewrite request paths:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: rewrite-route
+  namespace: default
+spec:
+  parentRefs:
+  - name: my-gateway
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/v1
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /api/v2
+    backendRefs:
+    - name: api-v2
+      port: 8080
+```
+
+## gRPC Routing
+
+KubeLB supports native gRPC routing with GRPCRoute:
+
+<Steps>
+  <Step title="Create a Gateway with gRPC Support">
+    ```yaml
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: Gateway
+    metadata:
+      name: grpc-gateway
+      namespace: default
+    spec:
+      gatewayClassName: kubelb
+      listeners:
+      - name: grpc
+        protocol: HTTP
+        port: 80
+        allowedRoutes:
+          namespaces:
+            from: All
+          kinds:
+          - kind: GRPCRoute
+    ```
+  </Step>
+
+  <Step title="Deploy gRPC Service">
+    ```yaml
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: grpc-service
+      namespace: default
+    spec:
+      selector:
+        app: grpc-app
+      ports:
+      - port: 9000
+        targetPort: 9000
+        protocol: TCP
+    ```
+  </Step>
+
+  <Step title="Create GRPCRoute">
+    ```yaml
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: GRPCRoute
+    metadata:
+      name: grpc-route
+      namespace: default
+    spec:
+      parentRefs:
+      - name: grpc-gateway
+      hostnames:
+      - "grpc.example.com"
+      rules:
+      - backendRefs:
+        - name: grpc-service
+          port: 9000
+    ```
+  </Step>
+
+  <Step title="Test gRPC Connection">
+    ```bash
+    # Using grpcurl
+    grpcurl -plaintext -authority grpc.example.com \\n      203.0.113.10:80 \\n      my.service.v1.MyService/MyMethod
+    ```
+  </Step>
+</Steps>
+
+### Method-Based gRPC Routing
+
+Route gRPC traffic based on service and method:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: grpc-method-routing
+  namespace: default
+spec:
+  parentRefs:
+  - name: grpc-gateway
+  rules:
+  # Route specific service to backend-v2
+  - matches:
+    - method:
+        service: my.service.v1.UserService
+    backendRefs:
+    - name: user-service-v2
+      port: 9000
+  # Route specific method
+  - matches:
+    - method:
+        service: my.service.v1.AuthService
+        method: Login
+    backendRefs:
+    - name: auth-service
+      port: 9000
+  # Default backend
+  - backendRefs:
+    - name: default-grpc
+      port: 9000
+```
+
+## Understanding the Route CRD
+
+When you create an HTTPRoute or GRPCRoute, KubeLB creates a Route CRD in the management cluster:
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Route
+metadata:
+  name: <route-uid>
+  namespace: <tenant-name>
+  labels:
+    kubelb.k8c.io/origin-name: api-route
+    kubelb.k8c.io/origin-ns: default
+    kubelb.k8c.io/origin-resource-kind: HTTPRoute.gateway.networking.k8s.io
+spec:
+  endpoints:
+  - addressesReference:
+      kind: Addresses
+      name: default
+      namespace: <tenant-name>
+  source:
+    kubernetes:
+      resource:
+        # The original HTTPRoute/GRPCRoute spec
+      services:
+        # Referenced backend services
+status:
+  resources:
+    route:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      name: api-route-generated
+      namespace: <tenant-name>
+      status:
+        # Status synced back to tenant cluster
+```
+
+## Cross-Namespace Routing
+
+Route to services in different namespaces:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: cross-ns-route
+  namespace: frontend
+spec:
+  parentRefs:
+  - name: my-gateway
+    namespace: default
+  rules:
+  - backendRefs:
+    - name: api-service
+      namespace: backend  # Different namespace
+      port: 8080
+```
+
+<Warning>
+Ensure the Gateway's `allowedRoutes` permits cross-namespace references:
+```yaml
+allowedRoutes:
+  namespaces:
+    from: All  # or use selector
+```
+</Warning>
+
+## Timeouts
+
+Configure request timeouts:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: timeout-route
+  namespace: default
+spec:
+  parentRefs:
+  - name: my-gateway
+  rules:
+  - timeouts:
+      request: 30s
+      backendRequest: 25s
+    backendRefs:
+    - name: slow-backend
+      port: 8080
+```
+
+## Retry Policy
+
+Configure automatic retries:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: retry-route
+  namespace: default
+  annotations:
+    # Envoy Gateway specific retry policy
+    gateway.envoyproxy.io/retry-on: "5xx,reset,connect-failure"
+    gateway.envoyproxy.io/num-retries: "3"
+spec:
+  parentRefs:
+  - name: my-gateway
+  rules:
+  - backendRefs:
+    - name: api-backend
+      port: 8080
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Route not working">
+    **Check route status:**
+    ```bash
+    kubectl get httproute api-route -o yaml
+    ```
+
+    Look for conditions in status.
+
+    **Check Route CRD in management cluster:**
+    ```bash
+    kubectl get routes -n <tenant-namespace>
+    ```
+
+    **Check Gateway status:**
+    ```bash
+    kubectl get gateway my-gateway -o yaml
+    ```
+  </Accordion>
+
+  <Accordion title="Gateway has no address">
+    **Check Envoy Gateway service:**
+    ```bash
+    kubectl get svc -n envoy-gateway-system
+    ```
+
+    **Check gateway events:**
+    ```bash
+    kubectl describe gateway my-gateway
+    ```
+  </Accordion>
+
+  <Accordion title="503 Service Unavailable">
+    **Verify backend service exists:**
+    ```bash
+    kubectl get svc api-backend
+    ```
+
+    **Check backend pods are ready:**
+    ```bash
+    kubectl get pods -l app=api
+    ```
+
+    **Check service endpoints:**
+    ```bash
+    kubectl get endpoints api-backend
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+- Learn about [Ingress resources](/guides/ingress)
+- Explore [Gateway API](/guides/gateway-api) in depth
+- Set up [TLS certificates](/guides/dns-certificates)

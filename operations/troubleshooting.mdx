@@ -1,0 +1,650 @@
+---
+title: Troubleshooting
+description: Debug common issues and resolve problems with KubeLB
+---
+
+This guide helps you diagnose and resolve common issues with KubeLB Manager and CCM deployments.
+
+## Common Issues
+
+### LoadBalancer Service Not Getting External IP
+
+<AccordionGroup>
+<Accordion title="Symptom">
+LoadBalancer service remains in `Pending` state:
+```bash
+$ kubectl get svc my-service
+NAME         TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)
+my-service   LoadBalancer   10.96.100.123   <pending>     80:30123/TCP
+```
+</Accordion>
+
+<Accordion title="Diagnosis">
+1. Check if CCM is running in the tenant cluster:
+```bash
+kubectl -n kube-system get pods -l app=kubelb-ccm
+kubectl -n kube-system logs -l app=kubelb-ccm --tail=100
+```
+
+2. Verify LoadBalancerClass configuration (if enabled):
+```bash
+# Check if service has the correct LoadBalancerClass
+kubectl get svc my-service -o jsonpath='{.spec.loadBalancerClass}'
+# Should return: kubelb (if --use-loadbalancer-class=true)
+```
+
+3. Check if LoadBalancer resource was created in management cluster:
+```bash
+# On management cluster
+kubectl -n tenant-<cluster-name> get loadbalancers
+kubectl -n tenant-<cluster-name> describe loadbalancer <service-name>
+```
+
+4. Verify CCM connection to management cluster:
+```bash
+# Check metrics endpoint
+curl localhost:9445/metrics | grep kubelb_ccm_kubelb_cluster_connected
+# Should return: kubelb_ccm_kubelb_cluster_connected 1
+```
+</Accordion>
+
+<Accordion title="Solutions">
+- **CCM not running**: Check CCM deployment and ensure kubeconfig is correctly mounted
+- **LoadBalancerClass mismatch**: Add `spec.loadBalancerClass: kubelb` to service, or set `--use-loadbalancer-class=false`
+- **CCM disconnected**: Verify kubelb-kubeconfig secret exists and has valid credentials
+- **Permission issues**: Ensure CCM has RBAC permissions in management cluster
+- **Missing tenant namespace**: Create tenant namespace in management cluster: `kubectl create ns tenant-<cluster-name>`
+</Accordion>
+</AccordionGroup>
+
+### Ingress Not Reachable
+
+<AccordionGroup>
+<Accordion title="Symptom">
+Ingress resource created but traffic doesn't reach backend:
+```bash
+$ kubectl get ingress my-ingress
+NAME         CLASS     HOSTS              ADDRESS   PORTS
+my-ingress   kubelb    app.example.com              80
+```
+</Accordion>
+
+<Accordion title="Diagnosis">
+1. Check if Ingress was converted to Route in management cluster:
+```bash
+# On management cluster
+kubectl -n tenant-<cluster-name> get routes
+kubectl -n tenant-<cluster-name> describe route <ingress-name>
+```
+
+2. Verify IngressClass is correct (if enabled):
+```bash
+kubectl get ingress my-ingress -o jsonpath='{.spec.ingressClassName}'
+# Should return: kubelb (if --use-ingress-class=true)
+```
+
+3. Check Envoy Gateway resources:
+```bash
+# On management cluster
+kubectl -n kubelb get gateway
+kubectl -n kubelb get httproute
+kubectl -n kubelb logs -l app=envoy-gateway --tail=100
+```
+
+4. Verify backend endpoints exist:
+```bash
+# On management cluster
+kubectl -n tenant-<cluster-name> get addresses
+kubectl -n tenant-<cluster-name> describe addresses default
+```
+</Accordion>
+
+<Accordion title="Solutions">
+- **IngressClass mismatch**: Set `spec.ingressClassName: kubelb` in Ingress, or use `--use-ingress-class=false`
+- **Ingress controller disabled**: Check CCM flags, ensure `--disable-ingress-controller=false`
+- **Missing backend service**: Ensure service exists and has endpoints in tenant cluster
+- **Node endpoints not synced**: Check KubeLBNodeReconciler logs: `kubectl -n kube-system logs -l app=kubelb-ccm | grep node.reconciler`
+- **Envoy Gateway not ready**: Verify Envoy Gateway deployment is healthy in management cluster
+</Accordion>
+</AccordionGroup>
+
+### Gateway API Resources Not Working
+
+<AccordionGroup>
+<Accordion title="Symptom">
+Gateway or HTTPRoute created but not functioning:
+```bash
+$ kubectl get gateway my-gateway
+NAME         CLASS     ADDRESS   READY
+my-gateway   kubelb              Unknown
+```
+</Accordion>
+
+<Accordion title="Diagnosis">
+1. Verify Gateway API is enabled:
+```bash
+# CCM logs should show Gateway API enabled
+kubectl -n kube-system logs -l app=kubelb-ccm | grep "enable-gateway-api"
+
+# Manager logs should show Gateway API enabled
+kubectl -n kubelb logs -l app=kubelb-manager | grep "enable-gateway-api"
+```
+
+2. Check if Gateway API CRDs are installed:
+```bash
+kubectl get crd gateways.gateway.networking.k8s.io
+kubectl get crd httproutes.gateway.networking.k8s.io
+```
+
+3. Verify GatewayClass is correct:
+```bash
+kubectl get gateway my-gateway -o jsonpath='{.spec.gatewayClassName}'
+# Should return: kubelb (if --use-gateway-class=true)
+```
+
+4. Check controller logs for errors:
+```bash
+# CCM Gateway controller
+kubectl -n kube-system logs -l app=kubelb-ccm | grep GatewayControllerName
+
+# Manager Route controller
+kubectl -n kubelb logs -l app=kubelb-manager | grep RouteControllerName
+```
+</Accordion>
+
+<Accordion title="Solutions">
+- **Gateway API not enabled**: Add `--enable-gateway-api=true` to both Manager and CCM
+- **CRDs not installed**: Install Gateway API CRDs or use `--install-gateway-api-crds=true`
+- **Wrong GatewayClass**: Use `gatewayClassName: kubelb` or set `--use-gateway-class=false`
+- **Gateway controller disabled**: Ensure `--disable-gateway-controller=false` and `--disable-httproute-controller=false`
+- **Wrong CRD channel**: If using experimental features, set `--gateway-api-crds-channel=experimental`
+</Accordion>
+</AccordionGroup>
+
+### Envoy Proxy Not Starting
+
+<AccordionGroup>
+<Accordion title="Symptom">
+Envoy proxy pods are crashing or not ready:
+```bash
+$ kubectl -n kubelb get pods -l app=envoy
+NAME                     READY   STATUS             RESTARTS
+kubelb-envoy-abc123-0    0/1     CrashLoopBackOff   5
+```
+</Accordion>
+
+<Accordion title="Diagnosis">
+1. Check Envoy pod logs:
+```bash
+kubectl -n kubelb logs <envoy-pod-name>
+kubectl -n kubelb describe pod <envoy-pod-name>
+```
+
+2. Verify xDS control plane is accessible:
+```bash
+# Check if control plane is listening
+kubectl -n kubelb get svc kubelb-manager
+# Should show port 8001 for xDS
+
+# Check control plane logs
+kubectl -n kubelb logs -l app=kubelb-manager | grep "envoy control-plane"
+```
+
+3. Check Envoy configuration:
+```bash
+# Get current config from Manager
+kubectl -n kubelb get config default -o yaml
+```
+
+4. Verify resource constraints:
+```bash
+# Check if pod is OOMKilled
+kubectl -n kubelb get events --field-selector involvedObject.name=<envoy-pod-name>
+```
+</Accordion>
+
+<Accordion title="Solutions">
+- **xDS unreachable**: Ensure Manager service is accessible on port 8001, check network policies
+- **Resource limits too low**: Increase `spec.envoyProxy.resources` in Config CRD
+- **Image pull error**: Verify `spec.envoyProxy.image` is correct and accessible
+- **Node selector mismatch**: Check `spec.envoyProxy.nodeSelector` matches available nodes
+- **Configuration error**: Review Config CRD for invalid settings, check Manager logs for validation errors
+</Accordion>
+</AccordionGroup>
+
+### High Reconciliation Latency
+
+<AccordionGroup>
+<Accordion title="Symptom">
+Changes to services or ingresses take a long time to propagate:
+```promql
+# P95 latency > 10 seconds
+histogram_quantile(0.95, rate(kubelb_manager_loadbalancer_reconcile_duration_seconds_bucket[5m])) > 10
+```
+</Accordion>
+
+<Accordion title="Diagnosis">
+1. Check controller queue depth:
+```bash
+# Look for rate limiting or queue depth in logs
+kubectl -n kubelb logs -l app=kubelb-manager | grep -E "rate|queue|backoff"
+kubectl -n kube-system logs -l app=kubelb-ccm | grep -E "rate|queue|backoff"
+```
+
+2. Monitor reconciliation metrics:
+```promql
+# Check reconciliation duration
+rate(kubelb_manager_loadbalancer_reconcile_duration_seconds_sum[5m]) /
+rate(kubelb_manager_loadbalancer_reconcile_duration_seconds_count[5m])
+
+# Check error rate
+rate(kubelb_manager_loadbalancer_reconcile_total{result="error"}[5m])
+```
+
+3. Check API server latency:
+```bash
+# Look for slow API calls
+kubectl -n kubelb logs -l app=kubelb-manager | grep "took longer"
+```
+
+4. Verify resource utilization:
+```bash
+kubectl -n kubelb top pods
+kubectl -n kube-system top pods -l app=kubelb-ccm
+```
+</Accordion>
+
+<Accordion title="Solutions">
+- **Resource constraints**: Increase CPU/memory requests for Manager or CCM pods
+- **High error rate**: Fix underlying errors causing retries (check logs)
+- **API server throttling**: Increase QPS/burst limits in kubeconfig
+- **Large number of resources**: Consider optimizing reconciliation logic or increasing replicas
+- **Network latency**: Ensure good connectivity between CCM and management cluster
+</Accordion>
+</AccordionGroup>
+
+### Secret Synchronization Failing
+
+<AccordionGroup>
+<Accordion title="Symptom">
+Secrets not syncing from tenant to management cluster:
+```bash
+$ kubectl -n tenant-production get syncsecrets
+NAME        AGE
+my-secret   5m
+
+$ kubectl -n tenant-production get secret my-secret
+Error from server (NotFound): secrets "my-secret" not found
+```
+</Accordion>
+
+<Accordion title="Diagnosis">
+1. Check if secret synchronizer is enabled:
+```bash
+# CCM should have --enable-secret-synchronizer=true
+kubectl -n kube-system get deploy kubelb-ccm -o yaml | grep enable-secret-synchronizer
+```
+
+2. Verify secret has correct label (if using auto-conversion):
+```bash
+kubectl -n default get secret my-secret -o jsonpath='{.metadata.labels.kubelb\.k8c\.io/managed-by}'
+# Should return: kubelb
+```
+
+3. Check SyncSecret resource:
+```bash
+# On tenant cluster
+kubectl get syncsecret my-secret -o yaml
+
+# On management cluster
+kubectl -n tenant-<cluster-name> get syncsecret my-secret -o yaml
+```
+
+4. Review controller logs:
+```bash
+# CCM SyncSecret controller
+kubectl -n kube-system logs -l app=kubelb-ccm | grep SyncSecretControllerName
+
+# Manager SyncSecret controller
+kubectl -n kubelb logs -l app=kubelb-manager | grep SyncSecretControllerName
+```
+</Accordion>
+
+<Accordion title="Solutions">
+- **Synchronizer not enabled**: Add `--enable-secret-synchronizer=true` to CCM flags
+- **Missing label**: Add label `kubelb.k8c.io/managed-by: kubelb` to source secret
+- **RBAC issues**: Ensure CCM has permission to create secrets in management cluster
+- **Source secret not found**: Verify secret reference in SyncSecret.spec.target.secret.name
+- **Namespace mismatch**: Ensure tenant namespace exists in management cluster
+</Accordion>
+</AccordionGroup>
+
+## Debugging Commands
+
+### Check Component Status
+
+<CodeGroup>
+```bash Manager Status
+# Check Manager pod status
+kubectl -n kubelb get pods -l app=kubelb-manager
+
+# View Manager logs
+kubectl -n kubelb logs -l app=kubelb-manager --tail=100
+
+# Check Manager metrics
+kubectl -n kubelb port-forward svc/kubelb-manager 9443:9443
+curl http://localhost:9443/metrics
+
+# Check Manager health
+kubectl -n kubelb port-forward svc/kubelb-manager 8081:8081
+curl http://localhost:8081/healthz
+curl http://localhost:8081/readyz
+```
+
+```bash CCM Status
+# Check CCM pod status
+kubectl -n kube-system get pods -l app=kubelb-ccm
+
+# View CCM logs
+kubectl -n kube-system logs -l app=kubelb-ccm --tail=100
+
+# Check CCM metrics
+kubectl -n kube-system port-forward svc/kubelb-ccm 9445:9445
+curl http://localhost:9445/metrics
+
+# Check CCM health
+kubectl -n kube-system port-forward svc/kubelb-ccm 8081:8081
+curl http://localhost:8081/healthz
+```
+
+```bash Envoy Status
+# Check Envoy pods
+kubectl -n kubelb get pods -l app=envoy
+
+# View Envoy logs
+kubectl -n kubelb logs <envoy-pod-name>
+
+# Check Envoy stats
+kubectl -n kubelb port-forward <envoy-pod-name> 19001:19001
+curl http://localhost:19001/stats/prometheus
+
+# Dump Envoy config
+kubectl -n kubelb exec <envoy-pod-name> -- curl -s localhost:19000/config_dump
+```
+</CodeGroup>
+
+### Inspect Resources
+
+<CodeGroup>
+```bash LoadBalancer Resources
+# On tenant cluster
+kubectl get svc -A --field-selector spec.type=LoadBalancer
+
+# On management cluster
+kubectl get loadbalancers -A
+kubectl describe loadbalancer -n tenant-<cluster-name> <name>
+
+# Check LoadBalancer status
+kubectl get lb -n tenant-<cluster-name> <name> -o jsonpath='{.status}' | jq
+```
+
+```bash Route Resources
+# On tenant cluster
+kubectl get ingress -A
+kubectl get gateway -A
+kubectl get httproute -A
+
+# On management cluster
+kubectl get routes -A
+kubectl describe route -n tenant-<cluster-name> <name>
+
+# Check Route status
+kubectl get route -n tenant-<cluster-name> <name> -o jsonpath='{.status}' | jq
+```
+
+```bash Endpoint Resources
+# On management cluster
+kubectl get addresses -n tenant-<cluster-name>
+kubectl describe addresses -n tenant-<cluster-name> default
+
+# Check endpoint IPs
+kubectl get addresses -n tenant-<cluster-name> default -o jsonpath='{.spec.addresses[*].ip}'
+```
+</CodeGroup>
+
+### Increase Logging Verbosity
+
+Add the `--zap-log-level` flag to increase logging detail:
+
+```yaml Manager Deployment
+spec:
+  template:
+    spec:
+      containers:
+        - name: manager
+          args:
+            - --zap-log-level=2  # 0=info, 1=debug, 2=trace
+```
+
+```yaml CCM Deployment
+spec:
+  template:
+    spec:
+      containers:
+        - name: ccm
+          args:
+            - --zap-log-level=2
+```
+
+### Enable Debug Mode
+
+For Manager, enable xDS debug logging:
+
+```bash
+kubectl -n kubelb patch deployment kubelb-manager --type=json -p='[
+  {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--debug"}
+]'
+```
+
+This enables verbose xDS logging for troubleshooting Envoy control plane issues.
+
+## Log Analysis
+
+### Key Log Messages
+
+<AccordionGroup>
+<Accordion title="Manager Log Patterns">
+```bash
+# Successful LoadBalancer reconciliation
+"Successfully reconciled LoadBalancer" namespace="tenant-production" name="my-service"
+
+# Envoy snapshot update
+"Updated Envoy snapshot" snapshot_name="tenant-production" version="12345"
+
+# Port allocation
+"Allocated port for service" port=30123 service="my-service"
+
+# Error patterns
+"Failed to reconcile LoadBalancer" error="context deadline exceeded"
+"Unable to sync Envoy snapshot" error="no endpoints available"
+```
+</Accordion>
+
+<Accordion title="CCM Log Patterns">
+```bash
+# Successful service sync
+"Successfully synced Service to LoadBalancer" namespace="default" name="my-service"
+
+# KubeLB cluster connection
+"Connected to KubeLB cluster" cluster="https://kubelb.example.com"
+
+# Node endpoint update
+"Updated node endpoints" nodes=3 endpoints=[
+
+# Error patterns
+"Failed to connect to KubeLB cluster" error="connection refused"
+"Service sync failed" error="LoadBalancer resource already exists"
+```
+</Accordion>
+
+<Accordion title="Envoy Log Patterns">
+```bash
+# xDS connection established
+"[xds] Connected to xDS server"
+
+# Cluster update received
+"[xds] Received cluster update" cluster="tenant-production-my-service"
+
+# Upstream connection
+"[upstream] Created connection to 10.0.1.5:30123"
+
+# Error patterns
+"[xds] Connection to xDS server failed"
+"[upstream] No healthy upstream endpoints"
+```
+</Accordion>
+</AccordionGroup>
+
+### Centralized Logging
+
+For production deployments, use centralized logging:
+
+<Steps>
+  <Step title="Configure Log Aggregation">
+    Use Fluentd, Fluent Bit, or Promtail to collect logs from all KubeLB components.
+  </Step>
+  
+  <Step title="Add Structured Logging Labels">
+    KubeLB logs include structured fields for filtering:
+    - `component`: manager, ccm, envoy
+    - `controller`: LoadBalancer, Route, Node, etc.
+    - `namespace`, `tenant`, `name`
+  </Step>
+  
+  <Step title="Create Log Queries">
+    Example Loki query:
+    ```logql
+    {app="kubelb-manager"} |= "error" | json | result="error"
+    ```
+  </Step>
+</Steps>
+
+## Performance Issues
+
+### High Memory Usage
+
+<Tip>
+Monitor memory usage with:
+```bash
+kubectl top pods -n kubelb
+kubectl top pods -n kube-system -l app=kubelb-ccm
+```
+</Tip>
+
+**Common causes:**
+- Large number of LoadBalancer resources
+- Memory leaks (check for increasing memory over time)
+- Inefficient caching
+
+**Solutions:**
+- Increase memory limits
+- Enable overload manager for Envoy
+- Restart pods to clear caches
+- Check for memory leaks in logs
+
+### High CPU Usage
+
+**Common causes:**
+- Frequent reconciliation loops
+- High error rate causing retries
+- Large number of resources to watch
+
+**Solutions:**
+- Check for reconciliation errors and fix root cause
+- Increase CPU limits
+- Optimize controller code (report issue if persistent)
+
+## Network Issues
+
+### CCM Cannot Connect to Management Cluster
+
+<Warning>
+Check the kubelb-kubeconfig secret:
+```bash
+kubectl -n kube-system get secret kubelb-kubeconfig
+kubectl -n kube-system get secret kubelb-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d
+```
+</Warning>
+
+**Common causes:**
+- Incorrect kubeconfig
+- Network policy blocking egress
+- Firewall rules
+- Certificate expired
+
+**Solutions:**
+- Validate kubeconfig manually: `kubectl --kubeconfig=<path> get ns`
+- Check network policies: `kubectl get networkpolicies -A`
+- Verify DNS resolution: `kubectl -n kube-system exec <ccm-pod> -- nslookup kubelb.example.com`
+- Check certificate expiration in kubeconfig
+
+### Envoy Cannot Reach Tenant Nodes
+
+**Common causes:**
+- Node IP addresses not routable from management cluster
+- NodePort service not accessible
+- Network policy blocking ingress to nodes
+
+**Solutions:**
+- Verify node addresses are correct:
+  ```bash
+  kubectl get addresses -n tenant-<cluster-name> default -o yaml
+  ```
+- Test NodePort accessibility from management cluster
+- Use correct `--node-address-type` (ExternalIP, InternalIP, or Hostname)
+- Check network policies in tenant cluster
+
+## Getting Help
+
+<CardGroup cols={2}>
+  <Card title="Check Logs" icon="file-lines">
+    Gather logs from Manager, CCM, and Envoy components
+  </Card>
+  
+  <Card title="Review Metrics" icon="chart-line">
+    Check Prometheus metrics for error rates and latency
+  </Card>
+  
+  <Card title="Inspect Resources" icon="magnifying-glass">
+    Verify LoadBalancer, Route, and Addresses resources
+  </Card>
+  
+  <Card title="Test Connectivity" icon="network-wired">
+    Validate network connectivity between components
+  </Card>
+</CardGroup>
+
+### Report Issues
+
+When reporting issues, include:
+
+1. **KubeLB version**: Check Manager and CCM deployment images
+2. **Component logs**: Last 100-200 lines from relevant pods
+3. **Resource manifests**: LoadBalancer, Route, Config, and related resources
+4. **Metrics**: Relevant Prometheus metrics showing the issue
+5. **Environment details**: Kubernetes version, cluster topology, network setup
+
+<Info>
+For official support, refer to the [KubeLB documentation](https://docs.kubermatic.com/kubelb) or open an issue in the GitHub repository.
+</Info>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Monitoring" icon="chart-line" href="/operations/monitoring">
+    Set up metrics and alerts to prevent issues
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/operations/configuration">
+    Review and optimize your configuration
+  </Card>
+</CardGroup>

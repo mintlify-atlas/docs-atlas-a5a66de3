@@ -1,0 +1,333 @@
+---
+title: Installing KubeLB Manager
+description: Deploy KubeLB Manager in the management cluster using Helm
+---
+
+The KubeLB Manager is deployed in the management cluster and is responsible for:
+
+- Hosting the Envoy xDS control plane
+- Receiving load balancer configurations from tenant clusters
+- Deploying and configuring Envoy proxy instances
+- Managing LoadBalancer and Route resources
+
+## Prerequisites
+
+Before installing the Manager, ensure you have:
+
+- A Kubernetes cluster meeting the [management cluster requirements](/installation/prerequisites#management-cluster-requirements)
+- `kubectl` configured to access the management cluster
+- Helm 3.x installed
+- The `kubelb` namespace created
+
+## Installation Steps
+
+<Steps>
+  <Step title="Create the namespace">
+    Create a dedicated namespace for KubeLB Manager:
+
+    ```bash
+    kubectl create namespace kubelb
+    ```
+  </Step>
+
+  <Step title="Pull the Helm chart">
+    Download the KubeLB Manager Helm chart from the OCI registry:
+
+    ```bash
+    helm pull oci://quay.io/kubermatic/helm-charts/kubelb-manager --version=v1.3.1 --untardir "." --untar
+    ```
+  </Step>
+
+  <Step title="Apply CRDs">
+    Install the Custom Resource Definitions (CRDs) before installing the chart:
+
+    ```bash
+    kubectl apply -f kubelb-manager/crds/
+    ```
+
+    <Note>
+      CRDs must be installed separately as they are not managed by Helm to prevent accidental deletion.
+    </Note>
+  </Step>
+
+  <Step title="Create values file">
+    Create a `values.yaml` file with your configuration. Here's a minimal example:
+
+    ```yaml values.yaml
+    kubelb:
+      # Enable debug logging (set to false in production)
+      debug: true
+      logLevel: info
+      
+      # Envoy proxy configuration
+      envoyProxy:
+        topology: shared
+        replicas: 2
+        singlePodPerNode: true
+    
+    # Resource limits
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+    ```
+
+    <Note>
+      The `shared` topology deploys one Envoy proxy per tenant cluster, which is the recommended configuration.
+    </Note>
+  </Step>
+
+  <Step title="Install the Helm chart">
+    Install KubeLB Manager using Helm:
+
+    ```bash
+    helm install kubelb-manager kubelb-manager/ \
+      --namespace kubelb \
+      -f values.yaml \
+      --create-namespace
+    ```
+  </Step>
+</Steps>
+
+## Configuration Options
+
+### Envoy Proxy Topology
+
+KubeLB supports different Envoy proxy deployment topologies:
+
+<CodeGroup>
+```yaml Shared (Recommended)
+kubelb:
+  envoyProxy:
+    topology: shared
+    replicas: 2
+    singlePodPerNode: true
+```
+
+```yaml High Availability
+kubelb:
+  envoyProxy:
+    topology: shared
+    replicas: 3
+    singlePodPerNode: true
+    useDaemonset: false
+```
+
+```yaml DaemonSet Mode
+kubelb:
+  envoyProxy:
+    topology: shared
+    useDaemonset: true
+```
+</CodeGroup>
+
+### Gateway API Support
+
+To enable Gateway API controllers:
+
+```yaml
+kubelb:
+  enableGatewayAPI: true
+```
+
+<Warning>
+  Gateway API CRDs must be installed before enabling this feature, otherwise the controller will fail to start.
+</Warning>
+
+### Annotation Propagation
+
+Control which annotations are propagated from LoadBalancer resources to services:
+
+<CodeGroup>
+```yaml Specific Annotations
+kubelb:
+  propagatedAnnotations:
+    metallb.universe.tf/loadBalancerIPs: "true"
+    external-dns.alpha.kubernetes.io/hostname: "true"
+```
+
+```yaml All Annotations
+kubelb:
+  propagateAllAnnotations: true
+```
+</CodeGroup>
+
+### Resource Configuration
+
+Configure resources for both the Manager and Envoy proxy:
+
+```yaml
+# Manager resources
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 200m
+    memory: 256Mi
+
+# Envoy proxy resources
+kubelb:
+  envoyProxy:
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 512Mi
+```
+
+### Monitoring
+
+Enable Prometheus ServiceMonitor:
+
+```yaml
+serviceMonitor:
+  enabled: true
+
+metrics:
+  port: 9443
+```
+
+Enable Grafana dashboards:
+
+```yaml
+grafana:
+  dashboards:
+    enabled: true
+    annotations:
+      grafana_folder: "KubeLB"
+```
+
+<Note>
+  Requires Grafana to be deployed with `sidecar.dashboards.enabled=true`.
+</Note>
+
+## Security
+
+### Chart Signature Verification
+
+All KubeLB Helm charts are cryptographically signed using Sigstore Cosign. Verify the chart before installation:
+
+```bash
+cosign verify quay.io/kubermatic/helm-charts/kubelb-manager:v1.3.1 \
+  --certificate-identity-regexp="^https://github.com/kubermatic/kubelb/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+```
+
+### Image Signature Verification
+
+Verify the Manager container image:
+
+```bash
+cosign verify quay.io/kubermatic/kubelb-manager:v1.3.1 \
+  --certificate-identity-regexp="^https://github.com/kubermatic/kubelb/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+```
+
+### Security Context
+
+The Manager runs with restrictive security settings by default:
+
+```yaml
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  runAsUser: 65532
+```
+
+## Advanced Configuration
+
+### KKP Integration
+
+For Kubermatic Kubernetes Platform integration:
+
+```yaml
+kkpintegration:
+  rbac: true
+```
+
+### Leader Election
+
+Configure leader election for high availability:
+
+```yaml
+kubelb:
+  enableLeaderElection: true
+
+replicaCount: 2
+```
+
+### Skip Config Generation
+
+To manage the Config CR manually:
+
+```yaml
+kubelb:
+  skipConfigGeneration: true
+```
+
+## Upgrading
+
+To upgrade KubeLB Manager to a new version:
+
+<Steps>
+  <Step title="Update CRDs">
+    ```bash
+    kubectl apply -f kubelb-manager/crds/
+    ```
+  </Step>
+
+  <Step title="Upgrade Helm release">
+    ```bash
+    helm upgrade kubelb-manager oci://quay.io/kubermatic/helm-charts/kubelb-manager \
+      --version=v1.3.1 \
+      --namespace kubelb \
+      -f values.yaml
+    ```
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### Check Manager Status
+
+```bash
+kubectl get pods -n kubelb -l app.kubernetes.io/name=kubelb-manager
+```
+
+### View Manager Logs
+
+```bash
+kubectl logs -n kubelb -l app.kubernetes.io/name=kubelb-manager -f
+```
+
+### Check Envoy Proxy Status
+
+```bash
+kubectl get pods -n kubelb -l app=envoy-proxy
+```
+
+### Common Issues
+
+<Warning>
+  If the Manager fails to start with Gateway API errors, ensure Gateway API CRDs are installed or disable Gateway API support by setting `kubelb.enableGatewayAPI: false`.
+</Warning>
+
+## Next Steps
+
+After installing the Manager:
+
+1. [Install KubeLB CCM](/installation/ccm) in your tenant clusters
+2. [Verify the installation](/installation/verification) to ensure components are working correctly

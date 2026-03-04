@@ -1,0 +1,642 @@
+---
+title: Using Ingress Resources
+description: Expose HTTP/HTTPS applications with Kubernetes Ingress
+---
+
+KubeLB provides support for Kubernetes Ingress resources, allowing you to expose HTTP and HTTPS applications. When you create an Ingress in your tenant cluster, KubeLB CCM automatically propagates it to the management cluster and configures the necessary routing.
+
+## How It Works
+
+1. **Ingress Creation**: You create an Ingress resource in your tenant cluster
+2. **Service Creation**: KubeLB CCM creates NodePort services for backends (if they don't exist)
+3. **Route Propagation**: A `Route` CRD is created in the management cluster
+4. **Envoy Configuration**: KubeLB configures Envoy Gateway with the routing rules
+5. **Status Sync**: The Ingress status (with load balancer IP) is synced back to your cluster
+
+<Note>
+KubeLB uses Envoy Gateway behind the scenes. Your Ingress resources are translated into Gateway API resources (Gateway and HTTPRoute) for advanced Layer 7 routing.
+</Note>
+
+## Basic Ingress
+
+<Steps>
+  <Step title="Create a Backend Service">
+    First, create a service and deployment:
+
+    ```yaml
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: web-app
+      namespace: default
+    spec:
+      selector:
+        app: web
+      ports:
+      - port: 80
+        targetPort: 8080
+    ---
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: web-app
+      namespace: default
+    spec:
+      replicas: 2
+      selector:
+        matchLabels:
+          app: web
+      template:
+        metadata:
+          labels:
+            app: web
+        spec:
+          containers:
+          - name: web
+            image: nginx:latest
+            ports:
+            - containerPort: 8080
+    ```
+  </Step>
+
+  <Step title="Create an Ingress">
+    Create an Ingress to expose your service:
+
+    ```yaml
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: web-ingress
+      namespace: default
+    spec:
+      ingressClassName: kubelb
+      rules:
+      - host: www.example.com
+        http:
+          paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-app
+                port:
+                  number: 80
+    ```
+
+    Apply the manifest:
+    ```bash
+    kubectl apply -f ingress.yaml
+    ```
+  </Step>
+
+  <Step title="Wait for Load Balancer IP">
+    Check the Ingress status:
+
+    ```bash
+    kubectl get ingress web-ingress
+    ```
+
+    You should see output like:
+    ```
+    NAME          CLASS     HOSTS             ADDRESS        PORTS   AGE
+    web-ingress   kubelb    www.example.com   203.0.113.10   80      1m
+    ```
+  </Step>
+
+  <Step title="Test Connectivity">
+    Test the ingress:
+
+    ```bash
+    curl -H "Host: www.example.com" http://203.0.113.10
+    ```
+  </Step>
+</Steps>
+
+## Using Ingress Class
+
+Specify the KubeLB ingress class to use KubeLB for routing:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-ingress
+  namespace: default
+spec:
+  ingressClassName: kubelb  # Specify KubeLB as the ingress controller
+  rules:
+  - host: app.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: my-service
+            port:
+              number: 80
+```
+
+<Warning>
+The `ingressClassName` field is required if your CCM is configured with `--use-ingress-class=true`.
+</Warning>
+
+## Multiple Hosts
+
+Route traffic to different services based on hostname:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: multi-host-ingress
+  namespace: default
+spec:
+  ingressClassName: kubelb
+  rules:
+  # Route api.example.com to api service
+  - host: api.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service
+            port:
+              number: 8080
+  # Route www.example.com to web service
+  - host: www.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web-service
+            port:
+              number: 80
+```
+
+Both hosts will use the same load balancer IP. Configure DNS to point both hostnames to the IP.
+
+## Path-Based Routing
+
+Route requests to different services based on URL path:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: path-based-ingress
+  namespace: default
+spec:
+  ingressClassName: kubelb
+  rules:
+  - host: example.com
+    http:
+      paths:
+      # Route /api/* to api service
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service
+            port:
+              number: 8080
+      # Route /web/* to web service
+      - path: /web
+        pathType: Prefix
+        backend:
+          service:
+            name: web-service
+            port:
+              number: 80
+      # Default route
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: default-service
+            port:
+              number: 80
+```
+
+### Path Types
+
+KubeLB supports three path types:
+
+<Tabs>
+  <Tab title="Prefix">
+    Matches based on URL path prefix:
+
+    ```yaml
+    paths:
+    - path: /api
+      pathType: Prefix  # Matches /api, /api/, /api/v1, etc.
+      backend:
+        service:
+          name: api-service
+          port:
+            number: 8080
+    ```
+  </Tab>
+
+  <Tab title="Exact">
+    Matches the exact path only:
+
+    ```yaml
+    paths:
+    - path: /api/v1
+      pathType: Exact  # Only matches /api/v1 exactly
+      backend:
+        service:
+          name: api-v1-service
+          port:
+            number: 8080
+    ```
+  </Tab>
+
+  <Tab title="ImplementationSpecific">
+    Behavior depends on the ingress controller:
+
+    ```yaml
+    paths:
+    - path: /.*
+      pathType: ImplementationSpecific  # Regex matching (if supported)
+      backend:
+        service:
+          name: catch-all-service
+          port:
+            number: 80
+    ```
+  </Tab>
+</Tabs>
+
+## TLS/HTTPS
+
+Enable HTTPS for your Ingress:
+
+<Steps>
+  <Step title="Create TLS Secret">
+    First, create a secret with your TLS certificate:
+
+    ```bash
+    kubectl create secret tls my-tls-secret \\
+      --cert=path/to/tls.crt \\
+      --key=path/to/tls.key
+    ```
+
+    Or create from a manifest:
+    ```yaml
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: my-tls-secret
+      namespace: default
+    type: kubernetes.io/tls
+    data:
+      tls.crt: <base64-encoded-cert>
+      tls.key: <base64-encoded-key>
+    ```
+  </Step>
+
+  <Step title="Reference Secret in Ingress">
+    ```yaml
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: tls-ingress
+      namespace: default
+    spec:
+      ingressClassName: kubelb
+      tls:
+      - hosts:
+        - secure.example.com
+        secretName: my-tls-secret
+      rules:
+      - host: secure.example.com
+        http:
+          paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: secure-service
+                port:
+                  number: 443
+    ```
+  </Step>
+
+  <Step title="Test HTTPS">
+    ```bash
+    curl https://secure.example.com
+    ```
+  </Step>
+</Steps>
+
+### Multiple TLS Certificates
+
+Use different certificates for different hosts:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: multi-tls-ingress
+  namespace: default
+spec:
+  ingressClassName: kubelb
+  tls:
+  - hosts:
+    - api.example.com
+    secretName: api-tls-secret
+  - hosts:
+    - www.example.com
+    secretName: www-tls-secret
+  rules:
+  - host: api.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service
+            port:
+              number: 8080
+  - host: www.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web-service
+            port:
+              number: 80
+```
+
+## Annotations
+
+### Custom Annotations
+
+Add custom annotations for advanced features:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: annotated-ingress
+  namespace: default
+  annotations:
+    # External DNS integration
+    external-dns.alpha.kubernetes.io/hostname: myapp.example.com
+    external-dns.alpha.kubernetes.io/ttl: "300"
+    
+    # Cert-manager integration
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    cert-manager.io/common-name: myapp.example.com
+spec:
+  ingressClassName: kubelb
+  rules:
+  - host: myapp.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: my-service
+            port:
+              number: 80
+```
+
+See the [DNS and Certificates guide](/guides/dns-certificates) for more details on external-dns and cert-manager integration.
+
+### Propagated Annotations
+
+By default, KubeLB propagates certain annotations from your Ingress to the underlying Gateway and HTTPRoute resources. You can control this behavior using the Tenant configuration.
+
+## Default Backend
+
+Specify a default backend for requests that don't match any rules:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-with-default
+  namespace: default
+spec:
+  ingressClassName: kubelb
+  defaultBackend:
+    service:
+      name: default-backend
+      port:
+        number: 80
+  rules:
+  - host: example.com
+    http:
+      paths:
+      - path: /app
+        pathType: Prefix
+        backend:
+          service:
+            name: app-service
+            port:
+              number: 8080
+```
+
+Requests to `example.com/other` will be routed to `default-backend`.
+
+## Understanding Route CRD for Ingress
+
+When you create an Ingress, KubeLB creates a Route CRD:
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Route
+metadata:
+  name: <ingress-uid>
+  namespace: <tenant-name>
+  labels:
+    kubelb.k8c.io/origin-name: web-ingress
+    kubelb.k8c.io/origin-ns: default
+    kubelb.k8c.io/origin-resource-kind: Ingress.networking.k8s.io
+spec:
+  endpoints:
+  - addressesReference:
+      kind: Addresses
+      name: default
+  source:
+    kubernetes:
+      resource:
+        # Original Ingress spec embedded here
+      services:
+        # Backend services with NodePort details
+status:
+  resources:
+    route:
+      # Generated HTTPRoute status
+    services:
+      # Generated service statuses
+```
+
+## NodePort Services
+
+KubeLB automatically creates NodePort services for your Ingress backends:
+
+```bash
+# List services created by KubeLB
+kubectl get svc -l kubelb.k8c.io/managed-by=kubelb
+```
+
+These services follow the naming pattern: `<service-name>-kubelb-<hash>`
+
+<Note>
+KubeLB manages these NodePort services automatically. You should not modify or delete them manually.
+</Note>
+
+## Cross-Namespace References
+
+Reference services in different namespaces:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cross-ns-ingress
+  namespace: frontend
+spec:
+  ingressClassName: kubelb
+  rules:
+  - host: app.example.com
+    http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service
+            # Service is in the backend namespace
+            # Note: Ingress spec doesn't support namespace field
+            # Service must be in the same namespace as Ingress
+            port:
+              number: 8080
+```
+
+<Warning>
+Kubernetes Ingress spec doesn't support cross-namespace service references. All services must be in the same namespace as the Ingress. Use Gateway API (HTTPRoute) for cross-namespace routing.
+</Warning>
+
+## Verifying Ingress Status
+
+Check Ingress status:
+
+```bash
+# Get Ingress details
+kubectl get ingress web-ingress -o yaml
+
+# Check events
+kubectl describe ingress web-ingress
+
+# View load balancer IP
+kubectl get ingress web-ingress -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+```
+
+From the management cluster:
+
+```bash
+# Check Route CRD
+kubectl get routes -n <tenant-namespace>
+
+# Get Route details
+kubectl describe route <route-name> -n <tenant-namespace>
+
+# Check generated HTTPRoute
+kubectl get httproutes -n <tenant-namespace>
+```
+
+## Cleanup
+
+Deleting the Ingress automatically cleans up all associated resources:
+
+```bash
+kubectl delete ingress web-ingress
+```
+
+KubeLB will:
+- Remove the Route CRD from the management cluster
+- Delete generated NodePort services
+- Clean up HTTPRoute and Gateway resources
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Ingress has no load balancer IP">
+    **Check CCM logs:**
+    ```bash
+    kubectl logs -n kubelb -l app.kubernetes.io/name=kubelb-ccm
+    ```
+
+    **Check Route CRD:**
+    ```bash
+    kubectl get routes -n <tenant-namespace>
+    ```
+
+    **Common causes:**
+    - Wrong ingress class
+    - CCM not running
+    - Gateway not ready
+  </Accordion>
+
+  <Accordion title="404 Not Found errors">
+    **Verify backend service:**
+    ```bash
+    kubectl get svc <service-name>
+    kubectl get endpoints <service-name>
+    ```
+
+    **Check pods are running:**
+    ```bash
+    kubectl get pods -l app=<your-app>
+    ```
+
+    **Verify path matching:**
+    - Ensure pathType is correct (Prefix vs Exact)
+    - Check for trailing slashes
+  </Accordion>
+
+  <Accordion title="TLS/HTTPS not working">
+    **Verify TLS secret exists:**
+    ```bash
+    kubectl get secret my-tls-secret -o yaml
+    ```
+
+    **Check certificate is valid:**
+    ```bash
+    kubectl get secret my-tls-secret -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -text -noout
+    ```
+
+    **Verify hostname matches:**
+    - Certificate CN/SAN must match the Ingress hostname
+  </Accordion>
+</AccordionGroup>
+
+## Migration to Gateway API
+
+Consider migrating from Ingress to Gateway API for advanced features:
+
+- Better support for protocols (HTTP/2, gRPC, TCP, UDP)
+- More flexible routing rules
+- Native support for cross-namespace references
+- Better traffic splitting capabilities
+
+See the [Gateway API guide](/guides/gateway-api) for migration details.
+
+## Next Steps
+
+- Learn about [Gateway API](/guides/gateway-api)
+- Set up [DNS automation](/guides/dns-certificates)
+- Configure [multi-cluster routing](/guides/multi-cluster)

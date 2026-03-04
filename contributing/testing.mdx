@@ -1,0 +1,528 @@
+---
+title: Testing
+description: Write and run unit tests and E2E tests for KubeLB
+icon: flask
+---
+
+KubeLB has comprehensive test coverage including unit tests and end-to-end (E2E) tests using the Chainsaw framework.
+
+## Unit Tests
+
+Unit tests run against a local control plane using [envtest](https://book.kubebuilder.io/reference/envtest.html).
+
+### Running Unit Tests
+
+```bash
+make test
+```
+
+This command:
+1. Downloads kubebuilder assets (API server, etcd)
+2. Starts a local control plane
+3. Runs tests in `internal/` with coverage reporting
+4. Generates `cover.out` coverage report
+
+### Environment Variables
+
+The test suite uses:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ENVTEST_K8S_VERSION` | Kubernetes version for envtest | Auto-detected from `k8s.io/api` |
+| `KUBEBUILDER_ASSETS` | Path to envtest binaries | Auto-set by `setup-envtest` |
+
+### Writing Unit Tests
+
+Follow the controller-runtime testing patterns:
+
+```go
+import (
+    . "github.com/onsi/ginkgo/v2"
+    . "github.com/onsi/gomega"
+    "sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+var _ = Describe("LoadBalancer Controller", func() {
+    Context("When reconciling a LoadBalancer", func() {
+        It("Should create Envoy deployment", func() {
+            // Create test LoadBalancer
+            lb := &kubelbv1alpha1.LoadBalancer{
+                ObjectMeta: metav1.ObjectMeta{
+                    Name:      "test-lb",
+                    Namespace: "default",
+                },
+                Spec: kubelbv1alpha1.LoadBalancerSpec{
+                    // ... spec fields
+                },
+            }
+            Expect(k8sClient.Create(ctx, lb)).To(Succeed())
+
+            // Verify deployment created
+            Eventually(func() error {
+                deploy := &appsv1.Deployment{}
+                return k8sClient.Get(ctx, client.ObjectKey{
+                    Name:      "envoy-test-lb",
+                    Namespace: "default",
+                }, deploy)
+            }, timeout, interval).Should(Succeed())
+        })
+    })
+})
+```
+
+### Test Structure
+
+Tests are located alongside the code they test:
+
+```
+internal/controllers/kubelb/
+├── loadbalancer_controller.go
+├── loadbalancer_controller_test.go  # Unit tests
+└── suite_test.go                     # Test suite setup
+```
+
+## E2E Tests
+
+KubeLB uses [Chainsaw](https://kyverno.github.io/chainsaw/) for declarative, YAML-based end-to-end testing with Kind clusters.
+
+### Quick Start
+
+<Steps>
+  <Step title="Run full E2E suite">
+    This creates Kind clusters, builds images, deploys KubeLB, and runs all tests:
+    ```bash
+    make e2e-kind
+    ```
+  </Step>
+  
+  <Step title="Run tests only">
+    If clusters are already set up:
+    ```bash
+    make e2e
+    ```
+  </Step>
+  
+  <Step title="Clean up">
+    ```bash
+    make e2e-cleanup-kind
+    ```
+  </Step>
+</Steps>
+
+### Step-by-Step E2E Workflow
+
+<CodeGroup>
+```bash Setup Clusters
+# Create 4 Kind clusters:
+# - kubelb (manager)
+# - tenant1 (multi-node)
+# - tenant2 (single-node)
+# - standalone (conversion tests)
+make e2e-setup-kind
+```
+
+```bash Build & Deploy
+# Build images and deploy to all clusters
+make e2e-deploy
+```
+
+```bash Run Tests
+# Run all E2E tests
+make e2e
+```
+
+```bash Quick Reload
+# Fast reload after code changes (no full rebuild)
+make e2e-reload
+```
+</CodeGroup>
+
+### Running Specific Tests
+
+Use label selectors to run subsets of tests:
+
+<CodeGroup>
+```bash Layer 4 Tests
+make e2e-select select=layer=layer4
+```
+
+```bash Layer 7 Tests
+make e2e-select select=layer=layer7
+```
+
+```bash Service Tests
+make e2e-select select=resource=service
+```
+
+```bash Ingress Tests
+make e2e-select select=resource=ingress
+```
+
+```bash Gateway Tests
+make e2e-select select=resource=gateway
+```
+
+```bash Basic Tests
+make e2e-select select=test=basic
+```
+
+```bash Conversion Tests
+make e2e-select select=suite=conversion
+```
+</CodeGroup>
+
+### Running a Single Test
+
+You can run a single test file directly:
+
+```bash
+chainsaw test --test-file test/e2e/tests/layer4/service/basic/chainsaw-test.yaml
+```
+
+## E2E Test Structure
+
+```
+test/e2e/
+├── tests/                    # Test cases
+│   ├── layer4/              # L4 LoadBalancer tests
+│   │   └── service/
+│   │       ├── basic/
+│   │       ├── multi-port/
+│   │       └── ...
+│   ├── layer7/              # L7 routing tests
+│   │   ├── ingress/
+│   │   ├── gateway/
+│   │   └── conversion/      # Ingress-to-Gateway conversion
+│   ├── features/            # Feature-specific tests
+│   │   └── syncsecret/
+│   └── isolated/            # Isolated test cases
+├── step-templates/          # Reusable test step templates
+│   ├── service/
+│   ├── ingress/
+│   └── gateway/
+├── manifests/               # Infrastructure manifests
+│   ├── metallb/
+│   └── tenants/
+├── testdata/                # Test resource definitions
+├── config.yaml              # Chainsaw configuration
+└── values.yaml              # Test parameters
+```
+
+## Understanding Chainsaw Tests
+
+Chainsaw tests are declarative YAML files that define test steps.
+
+### Example Test Structure
+
+```yaml
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: service-basic
+  labels:
+    layer: layer4
+    resource: service
+    test: basic
+spec:
+  description: |
+    Test basic LoadBalancer service creation and IP assignment.
+  
+  # Test-level variables
+  bindings:
+    - name: service_name
+      value: test-service
+  
+  steps:
+    # Step 1: Create service
+    - name: create-service
+      cluster: tenant1
+      try:
+        - apply:
+            file: service.yaml
+    
+    # Step 2: Wait for LoadBalancer IP
+    - name: wait-for-ip
+      cluster: tenant1
+      try:
+        - assert:
+            timeout: 60s
+            resource:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: ($service_name)
+              status:
+                (loadBalancer.ingress != null): true
+    
+    # Step 3: Cleanup
+    - name: cleanup
+      cluster: tenant1
+      finally:
+        - delete:
+            ref:
+              apiVersion: v1
+              kind: Service
+              name: ($service_name)
+```
+
+### Test Labels
+
+All tests should include these labels for filtering:
+
+| Label | Values | Purpose |
+|-------|--------|----------|
+| `layer` | `layer4`, `layer7` | Protocol layer |
+| `resource` | `service`, `ingress`, `gateway`, `syncsecret` | Resource type |
+| `test` | `basic`, `multi-port`, etc. | Test variant |
+| `suite` | `conversion` | Special test suites |
+
+## Step Templates
+
+Step templates are reusable test components that reduce code duplication.
+
+### Using Step Templates
+
+```yaml
+steps:
+  - name: verify-service-ready
+    use:
+      template: ../../../../step-templates/service/verify-loadbalancer-ip.yaml
+      with:
+        bindings:
+          - name: service_name
+            value: my-service
+          - name: namespace
+            value: default
+```
+
+### Creating Step Templates
+
+<Note>
+Step templates MUST use `try:`, NOT `finally:`. The `finally` keyword is invalid in step template specs.
+</Note>
+
+```yaml
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: StepTemplate
+spec:
+  # Default values (must be hardcoded)
+  bindings:
+    - name: service_name
+      value: test-service
+    - name: timeout
+      value: "60s"
+  
+  # Use try, not finally
+  try:
+    - script:
+        env:
+          - name: SERVICE_NAME
+            value: ($service_name)
+          - name: TIMEOUT
+            value: ($timeout)
+        content: |
+          # Wait for LoadBalancer IP
+          for i in $(seq 1 30); do
+            IP=$(kubectl get svc "$SERVICE_NAME" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            if [ -n "$IP" ]; then
+              echo "LoadBalancer IP: $IP"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Timeout waiting for LoadBalancer IP"
+          exit 1
+```
+
+## Cluster Configuration
+
+E2E tests use 4 Kind clusters:
+
+<AccordionGroup>
+  <Accordion title="kubelb" icon="server">
+    **Role**: Management cluster (hub)
+    
+    **Configuration**: Single-node
+    
+    **Components**:
+    - KubeLB Manager
+    - Envoy xDS control plane
+    - MetalLB for LoadBalancer services
+  </Accordion>
+
+  <Accordion title="tenant1" icon="building">
+    **Role**: Primary tenant cluster (multi-node)
+    
+    **Configuration**: 1 control plane + 3 workers
+    
+    **Components**:
+    - KubeLB CCM
+    - Test applications
+    
+    **Use**: Most tests run here
+  </Accordion>
+
+  <Accordion title="tenant2" icon="building">
+    **Role**: Secondary tenant cluster (single-node)
+    
+    **Configuration**: Single-node
+    
+    **Components**:
+    - KubeLB CCM
+    
+    **Use**: Single-node edge cases
+  </Accordion>
+
+  <Accordion title="standalone" icon="cube">
+    **Role**: Standalone conversion cluster
+    
+    **Configuration**: Single-node
+    
+    **Components**:
+    - Standalone CCM (Ingress-to-Gateway conversion)
+    
+    **Use**: Conversion tests only
+  </Accordion>
+</AccordionGroup>
+
+### Kubeconfig Files
+
+Kubeconfigs are stored in `.e2e-kubeconfigs/`:
+
+```bash
+export KUBELB_KUBECONFIG=.e2e-kubeconfigs/kubelb.kubeconfig
+export TENANT1_KUBECONFIG=.e2e-kubeconfigs/tenant1.kubeconfig
+export TENANT2_KUBECONFIG=.e2e-kubeconfigs/tenant2.kubeconfig
+export STANDALONE_KUBECONFIG=.e2e-kubeconfigs/standalone.kubeconfig
+```
+
+## Debugging Test Failures
+
+### View Test Logs
+
+Chainsaw provides detailed output during test runs. For more verbose output:
+
+```bash
+KUBECONFIG=.e2e-kubeconfigs/tenant1.kubeconfig \
+  chainsaw test test/e2e/tests/layer4/service/basic \
+  --config test/e2e/config.yaml \
+  --values test/e2e/values.yaml
+```
+
+### Manual Debugging
+
+To debug a specific test manually:
+
+<Steps>
+  <Step title="Apply test resources">
+    ```bash
+    kubectl --kubeconfig=.e2e-kubeconfigs/tenant1.kubeconfig \
+      apply -f test/e2e/tests/layer4/service/basic/service.yaml
+    ```
+  </Step>
+  
+  <Step title="Check CCM logs">
+    ```bash
+    kubectl --kubeconfig=.e2e-kubeconfigs/tenant1.kubeconfig \
+      logs -n kubelb -l app.kubernetes.io/name=kubelb-ccm -f
+    ```
+  </Step>
+  
+  <Step title="Check Manager logs">
+    ```bash
+    kubectl --kubeconfig=.e2e-kubeconfigs/kubelb.kubeconfig \
+      logs -n kubelb -l app.kubernetes.io/name=kubelb-manager -f
+    ```
+  </Step>
+  
+  <Step title="Inspect LoadBalancer CRDs">
+    ```bash
+    kubectl --kubeconfig=.e2e-kubeconfigs/kubelb.kubeconfig \
+      get loadbalancers.kubelb.k8c.io -A
+    ```
+  </Step>
+  
+  <Step title="Inspect Route CRDs">
+    ```bash
+    kubectl --kubeconfig=.e2e-kubeconfigs/kubelb.kubeconfig \
+      get routes.kubelb.k8c.io -A
+    ```
+  </Step>
+</Steps>
+
+### Common Issues
+
+<AccordionGroup>
+  <Accordion title="Tests time out waiting for LoadBalancer IP">
+    **Cause**: MetalLB not working or IP pool exhausted
+    
+    **Debug**:
+    ```bash
+    kubectl --kubeconfig=.e2e-kubeconfigs/kubelb.kubeconfig \
+      get ipaddresspools -n metallb-system
+    ```
+  </Accordion>
+
+  <Accordion title="LoadBalancer CRD not created in management cluster">
+    **Cause**: CCM not propagating resources
+    
+    **Debug**: Check CCM controller logs for errors
+  </Accordion>
+
+  <Accordion title="Envoy proxy not routing traffic">
+    **Cause**: xDS configuration issues
+    
+    **Debug**:
+    ```bash
+    kubectl --kubeconfig=.e2e-kubeconfigs/kubelb.kubeconfig \
+      logs -n tenant-primary -l app=envoy
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## macOS Networking
+
+<Warning>
+On macOS, Docker containers run in a Linux VM, making container IPs (including MetalLB LoadBalancer IPs) unreachable from the host.
+</Warning>
+
+The setup script automatically installs [docker-mac-net-connect](https://github.com/chipmk/docker-mac-net-connect) to create a tunnel:
+
+```bash
+# Automatic (runs during make e2e-setup-kind)
+brew install chipmk/tap/docker-mac-net-connect
+sudo docker-mac-net-connect
+```
+
+**Requirements**:
+- Docker Desktop (not Colima)
+- Homebrew
+- sudo access
+
+## CI/CD Integration
+
+E2E tests run in GitHub Actions on every PR:
+
+```yaml
+# .github/workflows/e2e.yml
+name: E2E Tests
+on: [pull_request]
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run E2E tests
+        run: make e2e-kind
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Code Generation" icon="code" href="/contributing/code-generation">
+    Learn about CRD and RBAC generation
+  </Card>
+  <Card title="Chainsaw Documentation" icon="book" href="https://kyverno.github.io/chainsaw/">
+    Deep dive into Chainsaw testing framework
+  </Card>
+</CardGroup>

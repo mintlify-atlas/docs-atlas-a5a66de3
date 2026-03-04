@@ -1,80 +1,420 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Get started with KubeLB in minutes
 ---
 
-## Get started in three steps
+## Prerequisites
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
+Before installing KubeLB, ensure you have:
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Management Cluster" icon="server">
+    A Kubernetes cluster with LoadBalancer service support (cloud provider or MetalLB)
+  </Card>
+  <Card title="Tenant Cluster" icon="cube">
+    One or more Kubernetes clusters that need load balancing services
+  </Card>
+  <Card title="Network Connectivity" icon="network-wired">
+    Network access from management cluster to tenant cluster nodes (NodePort range: 30000-32767)
+  </Card>
+  <Card title="Helm 3.x" icon="chart-simple">
+    Helm CLI installed for deploying charts
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Installation Overview
+
+KubeLB installation consists of two main steps:
+
+1. **Deploy KubeLB Manager** to the management cluster
+2. **Deploy KubeLB CCM** to each tenant cluster
+
+## Step 1: Deploy KubeLB Manager
+
+The KubeLB Manager runs in your management cluster and provides the central control plane.
+
+<Steps>
+  <Step title="Create Namespace">
+    Create a namespace for the KubeLB Manager:
+
+    ```bash
+    kubectl create namespace kubelb
+    ```
+  </Step>
+
+  <Step title="Pull Helm Chart">
+    Pull the KubeLB Manager Helm chart:
+
+    ```bash
+    helm pull oci://quay.io/kubermatic/helm-charts/kubelb-manager --version=v1.3.1 --untardir "." --untar
+    ```
+  </Step>
+
+  <Step title="Apply CRDs">
+    Apply the Custom Resource Definitions:
+
+    ```bash
+    kubectl apply -f kubelb-manager/crds/
+    ```
+  </Step>
+
+  <Step title="Create Values File">
+    Create a `values.yaml` file for your configuration:
+
+    ```yaml values.yaml
+    kubelb:
+      # Enable debug logging
+      debug: false
+      logLevel: info
+      
+      # Enable leader election for HA
+      enableLeaderElection: true
+      
+      # Envoy proxy configuration
+      envoyProxy:
+        topology: shared  # Options: shared, global
+        replicas: 2
+        useDaemonset: false
+        singlePodPerNode: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+    # Manager resource limits
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    ```
+
+    <Note>
+    For Gateway API support, add `enableGatewayAPI: true` to the `kubelb` section.
+    </Note>
+  </Step>
+
+  <Step title="Install Helm Chart">
+    Install the KubeLB Manager:
+
+    ```bash
+    helm install kubelb-manager kubelb-manager/ \
+      --namespace kubelb \
+      -f values.yaml
+    ```
+  </Step>
+
+  <Step title="Verify Installation">
+    Verify the manager is running:
+
+    ```bash
+    kubectl -n kubelb get pods
+    ```
+
+    Expected output:
+    ```
+    NAME                              READY   STATUS    RESTARTS   AGE
+    kubelb-manager-xxxxxxxxxx-xxxxx   2/2     Running   0          30s
+    ```
+  </Step>
+</Steps>
+
+## Step 2: Deploy KubeLB CCM
+
+The KubeLB CCM must be installed in each tenant cluster that needs load balancing services.
+
+<Steps>
+  <Step title="Create Kubeconfig Secret">
+    Switch to your tenant cluster context and create a kubeconfig for accessing the management cluster.
+
+    First, create a ServiceAccount in the management cluster for the tenant:
+
+    ```bash
+    # On management cluster
+    kubectl -n kubelb create serviceaccount tenant-production
+    
+    # Create RBAC (this is automatically handled during tenant setup)
+    # Get the token
+    kubectl -n kubelb create token tenant-production
+    ```
+
+    Create a kubeconfig file and then create a secret in the tenant cluster:
+
+    ```bash
+    # On tenant cluster
+    kubectl create namespace kubelb
+    kubectl -n kubelb create secret generic kubelb-cluster \
+      --from-file=kubelb=path/to/management-kubeconfig.yaml
+    ```
+  </Step>
+
+  <Step title="Pull CCM Helm Chart">
+    Pull the KubeLB CCM Helm chart:
+
+    ```bash
+    helm pull oci://quay.io/kubermatic/helm-charts/kubelb-ccm --version=v1.3.1 --untardir "." --untar
+    ```
+  </Step>
+
+  <Step title="Apply CRDs">
+    Apply the CCM Custom Resource Definitions:
+
+    ```bash
+    kubectl apply -f kubelb-ccm/crds/
+    ```
+  </Step>
+
+  <Step title="Create CCM Values File">
+    Create a `values-ccm.yaml` file:
+
+    ```yaml values-ccm.yaml
+    kubelb:
+      # Name of the secret containing management cluster kubeconfig
+      clusterSecretName: kubelb-cluster
+      
+      # Unique identifier for this tenant (required)
+      tenantName: production
+      
+      # Node address type for routing
+      nodeAddressType: ExternalIP  # Options: ExternalIP, InternalIP
+      
+      # Enable leader election
+      enableLeaderElection: true
+      
+      # Class-based filtering
+      useLoadBalancerClass: false  # Set to true to only manage services with class "kubelb"
+      useIngressClass: true        # Only manage Ingress with class "kubelb"
+      useGatewayClass: true        # Only manage Gateway with class "kubelb"
+      
+      # Controller toggles
+      disableIngressController: false
+      disableGatewayController: false  # Set to true if not using Gateway API
+      disableHTTPRouteController: false
+      disableGRPCRouteController: false
+
+    # CCM resource limits
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    ```
+
+    <Warning>
+    The `tenantName` must be unique across all tenant clusters and follow [RFC 1123](https://www.rfc-editor.org/rfc/rfc1123) lowercase naming conventions.
+    </Warning>
+  </Step>
+
+  <Step title="Install CCM Helm Chart">
+    Install the KubeLB CCM:
+
+    ```bash
+    helm install kubelb-ccm kubelb-ccm/ \
+      --namespace kubelb \
+      -f values-ccm.yaml
+    ```
+  </Step>
+
+  <Step title="Verify CCM Installation">
+    Verify the CCM is running:
+
+    ```bash
+    kubectl -n kubelb get pods
+    ```
+
+    Expected output:
+    ```
+    NAME                          READY   STATUS    RESTARTS   AGE
+    kubelb-ccm-xxxxxxxxxx-xxxxx   2/2     Running   0          30s
+    ```
+  </Step>
+</Steps>
+
+## Test Your Installation
+
+Let's verify that KubeLB is working by creating a test service.
+
+<Steps>
+  <Step title="Create Test Application">
+    In your tenant cluster, create a simple nginx deployment:
+
+    ```yaml test-app.yaml
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: nginx-test
+    spec:
+      replicas: 2
+      selector:
+        matchLabels:
+          app: nginx-test
+      template:
+        metadata:
+          labels:
+            app: nginx-test
+        spec:
+          containers:
+          - name: nginx
+            image: nginx:latest
+            ports:
+            - containerPort: 80
+    ---
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: nginx-test
+    spec:
+      type: LoadBalancer
+      selector:
+        app: nginx-test
+      ports:
+      - port: 80
+        targetPort: 80
+        protocol: TCP
+    ```
+
+    Apply the manifest:
+
+    ```bash
+    kubectl apply -f test-app.yaml
+    ```
+  </Step>
+
+  <Step title="Check Service Status">
+    Wait for the LoadBalancer IP to be assigned:
+
+    ```bash
+    kubectl get service nginx-test -w
+    ```
+
+    After a few moments, you should see an EXTERNAL-IP assigned:
+
+    ```
+    NAME         TYPE           CLUSTER-IP      EXTERNAL-IP      PORT(S)        AGE
+    nginx-test   LoadBalancer   10.96.100.123   192.168.1.100    80:31234/TCP   1m
+    ```
+  </Step>
+
+  <Step title="Verify Load Balancer in Management Cluster">
+    Switch to the management cluster and check that the LoadBalancer CRD was created:
+
+    ```bash
+    kubectl -n tenant-production get loadbalancers
+    ```
+
+    You should see:
+
+    ```
+    NAME         AGE
+    nginx-test   1m
+    ```
+  </Step>
+
+  <Step title="Test Connectivity">
+    Test accessing the service through the load balancer:
+
+    ```bash
+    curl http://192.168.1.100
+    ```
+
+    You should receive the nginx welcome page.
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configure Gateway API" icon="route" href="/guides/gateway-api">
+    Set up Layer 7 routing with Gateway API
+  </Card>
+  <Card title="Use Ingress Resources" icon="network-wired" href="/guides/ingress">
+    Configure HTTP/HTTPS routing with Ingress
+  </Card>
+  <Card title="Multi-Tenant Setup" icon="users" href="/guides/multi-cluster">
+    Learn about managing multiple tenant clusters
+  </Card>
+  <Card title="Monitoring & Observability" icon="chart-line" href="/operations/monitoring">
+    Set up metrics and monitoring for KubeLB
+  </Card>
+</CardGroup>
+
+## Security
+
+### Verify Chart Signature
+
+All KubeLB Helm charts are cryptographically signed using Sigstore Cosign:
+
+<CodeGroup>
+```bash Manager Chart
+cosign verify quay.io/kubermatic/helm-charts/kubelb-manager:v1.3.1 \
+  --certificate-identity-regexp="^https://github.com/kubermatic/kubelb/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+```
+
+```bash CCM Chart
+cosign verify quay.io/kubermatic/helm-charts/kubelb-ccm:v1.3.1 \
+  --certificate-identity-regexp="^https://github.com/kubermatic/kubelb/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+```
+</CodeGroup>
+
+### Verify Image Signature
+
+<CodeGroup>
+```bash Manager Image
+cosign verify quay.io/kubermatic/kubelb-manager:v1.3.1 \
+  --certificate-identity-regexp="^https://github.com/kubermatic/kubelb/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+```
+
+```bash CCM Image
+cosign verify quay.io/kubermatic/kubelb-ccm:v1.3.1 \
+  --certificate-identity-regexp="^https://github.com/kubermatic/kubelb/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+```
+</CodeGroup>
+
+## Troubleshooting
+
+### CCM Cannot Connect to Management Cluster
+
+If the CCM cannot connect to the management cluster:
+
+1. Verify the kubeconfig secret exists and is correctly formatted
+2. Check network connectivity from tenant to management cluster
+3. Verify RBAC permissions for the tenant ServiceAccount
+
+```bash
+kubectl -n kubelb logs deployment/kubelb-ccm
+```
+
+### LoadBalancer IP Not Assigned
+
+If services don't receive an external IP:
+
+1. Check that the management cluster has a working LoadBalancer implementation
+2. Verify the manager pods are running in the management cluster
+3. Check manager logs for errors
+
+```bash
+kubectl -n kubelb logs deployment/kubelb-manager
+```
+
+### Traffic Not Reaching Pods
+
+If traffic doesn't reach your pods:
+
+1. Verify network connectivity from management cluster to tenant nodes
+2. Check that NodePort services are accessible
+3. Verify Envoy proxy is running and configured
+
+```bash
+kubectl -n kubelb get pods -l app.kubernetes.io/name=envoy
+```

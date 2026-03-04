@@ -1,0 +1,259 @@
+---
+title: LoadBalancer
+description: API reference for the LoadBalancer Custom Resource Definition
+---
+
+The LoadBalancer resource represents a Layer 4 load balancer service that exposes endpoints from tenant clusters through the KubeLB management cluster.
+
+## API Version
+
+`kubelb.k8c.io/v1alpha1`
+
+## Spec Fields
+
+<ParamField path="endpoints" type="[]LoadBalancerEndpoints" required>
+  Sets of addresses and ports that comprise an exposed user service on a cluster. The expanded set of endpoints is the Cartesian product of Addresses x Ports.
+  
+  Minimum items: 1
+</ParamField>
+
+<ParamField path="endpoints[].name" type="string">
+  Name of the endpoint group.
+</ParamField>
+
+<ParamField path="endpoints[].addresses" type="[]EndpointAddress">
+  IP addresses which offer the related ports that are marked as ready. These endpoints should be considered safe for load balancers and clients to utilize.
+  
+  Minimum items: 1. Ignored if `addressesReference` is set.
+</ParamField>
+
+<ParamField path="endpoints[].addresses[].ip" type="string" required>
+  The IP of the endpoint. This can be an IPv4 or IPv6 address. The IP address must not be IP CIDR, Loopback (127.0.0.0/8), link-local (169.254.0.0/16), or link-local multicast (224.0.0.0/24) addresses.
+</ParamField>
+
+<ParamField path="endpoints[].addresses[].hostname" type="string">
+  The hostname of this endpoint.
+</ParamField>
+
+<ParamField path="endpoints[].addressesReference" type="ObjectReference">
+  Reference to an Addresses object that contains the IP addresses. If this field is set, the `addresses` field will be ignored.
+</ParamField>
+
+<ParamField path="endpoints[].ports" type="[]EndpointPort">
+  Port numbers available on the related IP addresses. This field is ignored for routes that are using kubernetes resources as the source.
+  
+  Minimum items: 1
+</ParamField>
+
+<ParamField path="endpoints[].ports[].name" type="string">
+  The name of this port. This must match the 'name' field in the corresponding ServicePort. Must be a DNS_LABEL. Optional only if one port is defined.
+</ParamField>
+
+<ParamField path="endpoints[].ports[].port" type="int32" required>
+  The port number of the endpoint.
+</ParamField>
+
+<ParamField path="endpoints[].ports[].protocol" type="Protocol">
+  The IP protocol for this port. Defaults to "TCP".
+  
+  Allowed values: `TCP`, `UDP`
+</ParamField>
+
+<ParamField path="ports" type="[]LoadBalancerPort">
+  The list of ports that are exposed by the load balancer service. Only needed for Layer 4 load balancing.
+</ParamField>
+
+<ParamField path="ports[].name" type="string">
+  The name of this port within the service. This must be a DNS_LABEL. All ports within a Spec must have unique names. When considering the endpoints for a Service, this must match the 'name' field in the EndpointPort. Optional if only one ServicePort is defined on this service.
+</ParamField>
+
+<ParamField path="ports[].protocol" type="Protocol">
+  The IP protocol for this port. Defaults to "TCP".
+  
+  Allowed values: `TCP`, `UDP`
+</ParamField>
+
+<ParamField path="ports[].port" type="int32" required>
+  The port that will be exposed by the LoadBalancer.
+</ParamField>
+
+<ParamField path="hostname" type="string">
+  Hostname is the domain name at which the load balancer service will be accessible. When hostname is set, KubeLB will create a route (ingress or httproute) for the service, and expose it with TLS on the given hostname. Currently, only HTTP protocol is supported.
+</ParamField>
+
+<ParamField path="type" type="ServiceType" default="ClusterIP">
+  Type determines how the Service is exposed. Valid options are `ExternalName`, `ClusterIP`, `NodePort`, and `LoadBalancer`.
+  
+  - `ExternalName` maps to the specified externalName
+  - `ClusterIP` allocates a cluster-internal IP address for load-balancing to endpoints
+  - `NodePort` builds on ClusterIP and allocates a port on every node which routes to the clusterIP
+  - `LoadBalancer` builds on NodePort and creates an external load-balancer (if supported in the current cloud) which routes to the clusterIP
+  
+  More info: https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types
+</ParamField>
+
+<ParamField path="externalTrafficPolicy" type="ServiceExternalTrafficPolicy">
+  Denotes if this Service desires to route external traffic to node-local or cluster-wide endpoints. "Local" preserves the client source IP and avoids a second hop for LoadBalancer and Nodeport type services, but risks potentially imbalanced traffic spreading. "Cluster" obscures the client source IP and may cause a second hop to another node, but should have good overall load-spreading.
+</ParamField>
+
+## Status Fields
+
+<ResponseField name="loadBalancer" type="LoadBalancerStatus">
+  Contains the current status of the load-balancer, if one is present.
+</ResponseField>
+
+<ResponseField name="loadBalancer.ingress" type="[]LoadBalancerIngress">
+  Ingress is a list containing ingress points for the load-balancer.
+</ResponseField>
+
+<ResponseField name="service" type="ServiceStatus">
+  Contains the current status of the LB service.
+</ResponseField>
+
+<ResponseField name="service.ports" type="[]ServicePort">
+  List of service ports.
+</ResponseField>
+
+<ResponseField name="hostname" type="HostnameStatus">
+  Contains the status for hostname resources.
+</ResponseField>
+
+<ResponseField name="hostname.hostname" type="string">
+  Hostname of the load-balancer.
+</ResponseField>
+
+<ResponseField name="hostname.tlsEnabled" type="boolean">
+  True if certificate is created for the hostname.
+</ResponseField>
+
+<ResponseField name="hostname.dnsRecordCreated" type="boolean">
+  True if DNS record is created for the hostname.
+</ResponseField>
+
+## Example
+
+### Layer 4 LoadBalancer
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: LoadBalancer
+metadata:
+  name: example-lb
+  namespace: default
+  labels:
+    kubelb.k8c.io/origin-name: my-service
+    kubelb.k8c.io/origin-ns: my-namespace
+spec:
+  type: LoadBalancer
+  endpoints:
+    - name: my-endpoints
+      addresses:
+        - ip: 10.10.1.1
+        - ip: 10.10.1.2
+      ports:
+        - name: http
+          port: 8080
+          protocol: TCP
+        - name: https
+          port: 8443
+          protocol: TCP
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+    - name: https
+      port: 443
+      protocol: TCP
+  externalTrafficPolicy: Local
+status:
+  loadBalancer:
+    ingress:
+      - ip: 203.0.113.10
+  service:
+    ports:
+      - name: http
+        port: 80
+        protocol: TCP
+        targetPort: 8080
+        upstreamTargetPort: 8080
+      - name: https
+        port: 443
+        protocol: TCP
+        targetPort: 8443
+        upstreamTargetPort: 8443
+```
+
+### LoadBalancer with Hostname
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: LoadBalancer
+metadata:
+  name: example-lb-hostname
+  namespace: default
+spec:
+  hostname: app.example.com
+  type: LoadBalancer
+  endpoints:
+    - name: my-endpoints
+      addresses:
+        - ip: 10.10.1.1
+          hostname: node1.cluster.local
+        - ip: 10.10.1.2
+          hostname: node2.cluster.local
+      ports:
+        - name: http
+          port: 8080
+          protocol: TCP
+status:
+  hostname:
+    hostname: app.example.com
+    tlsEnabled: true
+    dnsRecordCreated: true
+  loadBalancer:
+    ingress:
+      - hostname: app.example.com
+```
+
+### LoadBalancer with AddressesReference
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: LoadBalancer
+metadata:
+  name: example-lb-ref
+  namespace: default
+spec:
+  type: LoadBalancer
+  endpoints:
+    - name: my-endpoints
+      addressesReference:
+        name: default
+        namespace: default
+      ports:
+        - name: http
+          port: 8080
+          protocol: TCP
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+```
+
+## Annotations
+
+<ParamField path="kubelb.k8c.io/propagate-annotation" type="string">
+  Controls the annotations propagation. It is possible to provide an optional list of comma-separated values after '='. Annotations not represented by any key or not matching the optional values are dropped.
+  
+  To configure multiple different annotations, you can provide unique suffixes, e.g., `kubelb.k8c.io/propagate-annotation-1`.
+</ParamField>
+
+## Labels
+
+<ParamField path="kubelb.k8c.io/origin-name" type="string">
+  Name of the original resource in the tenant cluster.
+</ParamField>
+
+<ParamField path="kubelb.k8c.io/origin-ns" type="string">
+  Namespace of the original resource in the tenant cluster.
+</ParamField>

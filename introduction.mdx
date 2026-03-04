@@ -1,0 +1,135 @@
+---
+title: Introduction
+description: Centralized load balancing for Kubernetes across multi-cloud and on-premise environments
+---
+
+## What is KubeLB?
+
+KubeLB is a Kubernetes-native tool by Kubermatic that provides centralized management of Layer 4 and Layer 7 load balancing configurations for Kubernetes clusters across multi-cloud and on-premise environments.
+
+## The Problem
+
+Kubernetes doesn't provide a built-in implementation for load balancers. Instead, it relies on cloud provider implementations to provision and manage load balancers. This creates significant challenges:
+
+<CardGroup cols={2}>
+  <Card title="Bare-Metal Limitations" icon="server">
+    Services of type `LoadBalancer` never receive an IP address without cloud provider support or additional tools
+  </Card>
+  <Card title="Multi-Cluster Complexity" icon="network-wired">
+    Solutions like MetalLB and Cilium work well for single clusters but require separate configuration per cluster
+  </Card>
+  <Card title="IP Management Challenges" icon="address-card">
+    Managing IP addresses across multiple clusters becomes complex without centralized control
+  </Card>
+  <Card title="L7 Tooling Overhead" icon="layer-group">
+    Application load balancing requires additional tools in each cluster (nginx-ingress, Envoy Gateway) plus separate DNS, TLS, and WAF management
+  </Card>
+</CardGroup>
+
+## The KubeLB Solution
+
+KubeLB solves these challenges by providing a **centralized management solution** that manages the data plane for multiple Kubernetes clusters. This enables you to:
+
+- Manage a fleet of Kubernetes clusters from a single control point
+- Ensure security compliance and enforce policies consistently
+- Provide a unified experience for developers across all clusters
+- Simplify IP address management across your infrastructure
+
+## Key Features
+
+### Centralized Load Balancer Management
+
+Manage both Layer 4 (TCP/UDP) and Layer 7 (HTTP/HTTPS) load balancing from a single management cluster.
+
+### Hub-and-Spoke Architecture
+
+The "Management Cluster" acts as the hub, while "Tenant Clusters" act as spokes. Information flows from tenant clusters to the management cluster, which then configures and deploys load balancers.
+
+### Multi-Tenant Isolation
+
+Tenants have no access to native Kubernetes resources in the management cluster. They interact only via KubeLB CRDs, ensuring controlled operations and security isolation.
+
+### Envoy-Powered Traffic Routing
+
+KubeLB uses Envoy Proxy to route traffic to the appropriate endpoints (node ports on tenant cluster nodes), with flexible deployment topologies:
+
+<Note>
+**Topology Options:**
+- **Shared** (default): Single Envoy proxy per tenant cluster
+- **Global**: Single Envoy proxy for all tenant clusters
+- **Dedicated** (deprecated in v1.1.0): One Envoy proxy per load balancer service
+</Note>
+
+### Cloud Provider Compatibility
+
+Works with any cloud provider's LoadBalancer implementation or self-managed solutions like MetalLB.
+
+### Gateway API Support
+
+Full support for Kubernetes Gateway API resources (Gateway, HTTPRoute, GRPCRoute) alongside traditional Ingress resources.
+
+## Use Cases
+
+<CardGroup cols={2}>
+  <Card title="Bare-Metal Kubernetes" icon="cube">
+    Provide LoadBalancer services to on-premise clusters without cloud provider support
+  </Card>
+  <Card title="Multi-Cloud Management" icon="cloud">
+    Unify load balancer management across AWS, Azure, GCP, and on-premise environments
+  </Card>
+  <Card title="Edge Computing" icon="tower-cell">
+    Centrally manage load balancing for distributed edge Kubernetes clusters
+  </Card>
+  <Card title="Cost Optimization" icon="dollar-sign">
+    Reduce infrastructure costs by sharing load balancing resources across multiple clusters
+  </Card>
+</CardGroup>
+
+## How It Works
+
+<Steps>
+  <Step title="Deploy KubeLB Manager">
+    Install the KubeLB Manager in your management cluster, which hosts the Envoy xDS server and load balancer configuration
+  </Step>
+  <Step title="Deploy KubeLB CCM">
+    Install the KubeLB CCM (Cloud Controller Manager) in each tenant cluster that needs load balancing services
+  </Step>
+  <Step title="Create LoadBalancer Services">
+    Create services of type `LoadBalancer` in your tenant clusters as you normally would
+  </Step>
+  <Step title="Automatic Propagation">
+    The CCM watches for services, nodes, and routing resources, then propagates configurations to the management cluster
+  </Step>
+  <Step title="Traffic Routing">
+    The management cluster configures Envoy Proxy to route traffic through node ports to your tenant cluster backends
+  </Step>
+</Steps>
+
+## Traffic Flow
+
+### Layer 4 (LoadBalancer Services)
+
+```
+Client → LoadBalancer Service → KubeLB Envoy Proxy → Tenant Node:NodePort → Pod
+```
+
+### Layer 7 (Ingress/Gateway API)
+
+```
+Client → Envoy Gateway LB → KubeLB Envoy Proxy (xDS) → Tenant Node:NodePort → Pod
+```
+
+<Warning>
+KubeLB requires network access from the management cluster to tenant cluster nodes within the NodePort range (default: 30000-32767).
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Understand the hub-and-spoke model and key components
+  </Card>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get started with a basic KubeLB installation
+  </Card>
+</CardGroup>

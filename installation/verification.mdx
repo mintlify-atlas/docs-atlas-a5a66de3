@@ -1,0 +1,434 @@
+---
+title: Verifying Installation
+description: Verify that KubeLB Manager and CCM are correctly installed and functioning
+---
+
+After installing KubeLB Manager and CCM, verify that all components are running correctly and can communicate with each other.
+
+## Verify Management Cluster
+
+First, verify that the KubeLB Manager is running properly in the management cluster.
+
+### Check Manager Deployment
+
+<Steps>
+  <Step title="Check Manager pods">
+    Verify the Manager pod is running:
+
+    ```bash
+    kubectl get pods -n kubelb -l app.kubernetes.io/name=kubelb-manager
+    ```
+
+    Expected output:
+    ```
+    NAME                              READY   STATUS    RESTARTS   AGE
+    kubelb-manager-xxxxxxxxxx-xxxxx   2/2     Running   0          5m
+    ```
+
+    <Note>
+      The Manager pod has 2 containers: the manager itself and kube-rbac-proxy.
+    </Note>
+  </Step>
+
+  <Step title="Check Envoy proxy deployment">
+    Verify the Envoy proxy pods are running:
+
+    ```bash
+    kubectl get pods -n kubelb -l app=envoy-proxy
+    ```
+
+    Expected output (for `replicas: 2`):
+    ```
+    NAME                           READY   STATUS    RESTARTS   AGE
+    envoy-proxy-xxxxxxxxxx-xxxxx   1/1     Running   0          5m
+    envoy-proxy-xxxxxxxxxx-xxxxx   1/1     Running   0          5m
+    ```
+  </Step>
+
+  <Step title="Check Manager service">
+    Verify the Manager service is created:
+
+    ```bash
+    kubectl get svc -n kubelb kubelb-manager
+    ```
+
+    Expected output:
+    ```
+    NAME             TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
+    kubelb-manager   ClusterIP   10.96.123.456   <none>        8001/TCP   5m
+    ```
+  </Step>
+
+  <Step title="Check CRDs">
+    Verify that KubeLB CRDs are installed:
+
+    ```bash
+    kubectl get crds | grep kubelb.k8c.io
+    ```
+
+    Expected output:
+    ```
+    configs.kubelb.k8c.io
+    loadbalancers.kubelb.k8c.io
+    routes.kubelb.k8c.io
+    tenants.kubelb.k8c.io
+    ```
+  </Step>
+</Steps>
+
+### Check Manager Logs
+
+Review the Manager logs for any errors:
+
+```bash
+kubectl logs -n kubelb -l app.kubernetes.io/name=kubelb-manager -c manager --tail=50
+```
+
+Look for successful initialization messages:
+
+```
+INFO    Starting manager
+INFO    Starting server
+INFO    Envoy xDS control plane started
+```
+
+<Warning>
+  If you see errors related to Gateway API, ensure Gateway API CRDs are installed or disable Gateway API support by setting `kubelb.enableGatewayAPI: false`.
+</Warning>
+
+## Verify Tenant Cluster
+
+Next, verify that the KubeLB CCM is running in each tenant cluster.
+
+### Check CCM Deployment
+
+<Steps>
+  <Step title="Check CCM pods">
+    Verify the CCM pod is running:
+
+    ```bash
+    kubectl get pods -n kubelb -l app.kubernetes.io/name=kubelb-ccm
+    ```
+
+    Expected output:
+    ```
+    NAME                          READY   STATUS    RESTARTS   AGE
+    kubelb-ccm-xxxxxxxxxx-xxxxx   2/2     Running   0          5m
+    ```
+  </Step>
+
+  <Step title="Check management cluster secret">
+    Verify the management cluster kubeconfig secret exists:
+
+    ```bash
+    kubectl get secret -n kubelb kubelb-cluster
+    ```
+
+    Expected output:
+    ```
+    NAME             TYPE     DATA   AGE
+    kubelb-cluster   Opaque   1      10m
+    ```
+  </Step>
+
+  <Step title="Check CRDs">
+    Verify that KubeLB CRDs are installed:
+
+    ```bash
+    kubectl get crds | grep kubelb.k8c.io
+    ```
+
+    Expected output should include the same CRDs as in the management cluster.
+  </Step>
+</Steps>
+
+### Check CCM Logs
+
+Review the CCM logs for any errors:
+
+```bash
+kubectl logs -n kubelb -l app.kubernetes.io/name=kubelb-ccm -c manager --tail=50
+```
+
+Look for successful initialization:
+
+```
+INFO    Starting manager
+INFO    Connected to management cluster
+INFO    Tenant registered: tenant-cluster-1
+```
+
+## Test Load Balancer Creation
+
+Create a test LoadBalancer service to verify end-to-end functionality.
+
+### Deploy Test Application
+
+<Steps>
+  <Step title="Create test deployment">
+    In the tenant cluster, create a simple test application:
+
+    ```yaml test-app.yaml
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: test-app
+      namespace: default
+    spec:
+      replicas: 2
+      selector:
+        matchLabels:
+          app: test-app
+      template:
+        metadata:
+          labels:
+            app: test-app
+        spec:
+          containers:
+          - name: nginx
+            image: nginx:latest
+            ports:
+            - containerPort: 80
+    ---
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: test-app-lb
+      namespace: default
+    spec:
+      type: LoadBalancer
+      selector:
+        app: test-app
+      ports:
+      - port: 80
+        targetPort: 80
+        protocol: TCP
+    ```
+
+    Apply the manifest:
+    ```bash
+    kubectl apply -f test-app.yaml
+    ```
+  </Step>
+
+  <Step title="Check service status">
+    Wait for the service to get an external IP (this may take a minute):
+
+    ```bash
+    kubectl get svc test-app-lb -w
+    ```
+
+    Expected output:
+    ```
+    NAME          TYPE           CLUSTER-IP      EXTERNAL-IP      PORT(S)        AGE
+    test-app-lb   LoadBalancer   10.96.123.456   203.0.113.10     80:31234/TCP   30s
+    ```
+  </Step>
+
+  <Step title="Verify LoadBalancer resource in management cluster">
+    Switch to the management cluster and check that the LoadBalancer CRD was created:
+
+    ```bash
+    kubectl get loadbalancers -A
+    ```
+
+    Expected output:
+    ```
+    NAMESPACE          NAME                     AGE
+    tenant-cluster-1   default-test-app-lb      1m
+    ```
+  </Step>
+
+  <Step title="Check Envoy proxy service">
+    Verify that a LoadBalancer service was created for the Envoy proxy:
+
+    ```bash
+    kubectl get svc -n kubelb
+    ```
+
+    Look for services related to your tenant:
+    ```
+    NAME                                    TYPE           EXTERNAL-IP
+    tenant-cluster-1-default-test-app-lb    LoadBalancer   203.0.113.10
+    ```
+  </Step>
+
+  <Step title="Test connectivity">
+    Test that you can reach the application through the load balancer:
+
+    ```bash
+    curl http://203.0.113.10
+    ```
+
+    You should see the nginx welcome page.
+  </Step>
+</Steps>
+
+### Cleanup Test Resources
+
+Remove the test application:
+
+```bash
+kubectl delete -f test-app.yaml
+```
+
+Verify the LoadBalancer resource is removed from the management cluster:
+
+```bash
+# Run on management cluster
+kubectl get loadbalancers -A
+```
+
+## Verify Metrics (Optional)
+
+If you enabled monitoring, verify that metrics are being collected.
+
+### Check Metrics Endpoints
+
+<CodeGroup>
+```bash Manager Metrics
+# Port-forward to the Manager metrics endpoint
+kubectl port-forward -n kubelb svc/kubelb-manager 9443:9443
+
+# In another terminal, check metrics
+curl -k https://localhost:9443/metrics
+```
+
+```bash CCM Metrics
+# Port-forward to the CCM metrics endpoint
+kubectl port-forward -n kubelb svc/kubelb-ccm 9445:9445
+
+# In another terminal, check metrics
+curl -k https://localhost:9445/metrics
+```
+</CodeGroup>
+
+### Check ServiceMonitor
+
+If using Prometheus Operator:
+
+```bash
+kubectl get servicemonitor -n kubelb
+```
+
+## Troubleshooting
+
+### Manager Not Starting
+
+<CodeGroup>
+```bash Check pod status
+kubectl describe pod -n kubelb -l app.kubernetes.io/name=kubelb-manager
+```
+
+```bash Check events
+kubectl get events -n kubelb --sort-by='.lastTimestamp'
+```
+
+```bash Check logs
+kubectl logs -n kubelb -l app.kubernetes.io/name=kubelb-manager -c manager
+```
+</CodeGroup>
+
+### CCM Cannot Connect to Management Cluster
+
+<Steps>
+  <Step title="Verify secret contents">
+    ```bash
+    kubectl get secret -n kubelb kubelb-cluster -o jsonpath='{.data.kubelb}' | base64 -d
+    ```
+
+    Ensure the kubeconfig is valid and points to the correct management cluster.
+  </Step>
+
+  <Step title="Test connectivity">
+    ```bash
+    kubectl exec -n kubelb deploy/kubelb-ccm -c manager -- \
+      sh -c 'kubectl --kubeconfig=/kubelb/kubelb cluster-info'
+    ```
+  </Step>
+
+  <Step title="Check RBAC permissions">
+    Verify the kubeconfig has permissions to create LoadBalancer and Route resources in the management cluster.
+  </Step>
+</Steps>
+
+### Service Not Getting External IP
+
+<Steps>
+  <Step title="Check LoadBalancer class filtering">
+    If `useLoadBalancerClass: true`, ensure services have the correct annotation:
+
+    ```yaml
+    metadata:
+      annotations:
+        loadBalancerClass: kubelb
+    ```
+  </Step>
+
+  <Step title="Check CCM logs">
+    ```bash
+    kubectl logs -n kubelb -l app.kubernetes.io/name=kubelb-ccm -c manager | grep -i error
+    ```
+  </Step>
+
+  <Step title="Verify LoadBalancer CRD creation">
+    Check if the LoadBalancer CRD was created in the management cluster:
+
+    ```bash
+    kubectl get loadbalancers -A
+    ```
+  </Step>
+
+  <Step title="Check management cluster LoadBalancer implementation">
+    Ensure the management cluster has a working LoadBalancer implementation (cloud provider or MetalLB).
+  </Step>
+</Steps>
+
+### Envoy Proxy Issues
+
+<CodeGroup>
+```bash Check Envoy logs
+kubectl logs -n kubelb -l app=envoy-proxy --tail=100
+```
+
+```bash Check Envoy configuration
+kubectl exec -n kubelb deploy/envoy-proxy -- \
+  curl -s http://localhost:19000/config_dump
+```
+
+```bash Check xDS connection
+kubectl logs -n kubelb -l app.kubernetes.io/name=kubelb-manager -c manager | grep -i xds
+```
+</CodeGroup>
+
+## Health Checks
+
+Use these commands for ongoing health monitoring:
+
+<CodeGroup>
+```bash Manager Health
+kubectl get pods -n kubelb -l app.kubernetes.io/name=kubelb-manager
+kubectl get pods -n kubelb -l app=envoy-proxy
+kubectl get svc -n kubelb
+```
+
+```bash CCM Health (run in tenant cluster)
+kubectl get pods -n kubelb -l app.kubernetes.io/name=kubelb-ccm
+kubectl get svc -n kubelb
+```
+
+```bash Resources (run in management cluster)
+kubectl get loadbalancers -A
+kubectl get routes -A
+kubectl get tenants
+```
+</CodeGroup>
+
+## Next Steps
+
+Once verification is complete:
+
+1. Review the [Architecture](/architecture) documentation to understand the traffic flow
+2. Learn how to use LoadBalancer services, Ingress, and Gateway API resources with KubeLB
+3. Configure monitoring and alerting for production deployments
+4. Set up high availability by increasing replica counts

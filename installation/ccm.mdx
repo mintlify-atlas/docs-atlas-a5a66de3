@@ -1,0 +1,451 @@
+---
+title: Installing KubeLB CCM
+description: Deploy KubeLB CCM in tenant clusters to enable load balancer services
+---
+
+The KubeLB CCM (Cloud Controller Manager) is deployed in tenant clusters and is responsible for:
+
+- Watching Kubernetes Services, Ingresses, and Gateway API resources
+- Propagating load balancer configurations to the management cluster
+- Managing node endpoints for load balancing
+- Synchronizing secrets and certificates when needed
+
+## Prerequisites
+
+Before installing the CCM, ensure you have:
+
+- A Kubernetes cluster meeting the [tenant cluster requirements](/installation/prerequisites#tenant-cluster-requirements)
+- [KubeLB Manager installed](/installation/manager) in the management cluster
+- `kubectl` configured to access the tenant cluster
+- Helm 3.x installed
+- A kubeconfig file with access to the management cluster
+- A unique tenant name (RFC 1123 lowercase format)
+
+## Installation Steps
+
+<Steps>
+  <Step title="Create the namespace">
+    Create a dedicated namespace for KubeLB CCM:
+
+    ```bash
+    kubectl create namespace kubelb
+    ```
+  </Step>
+
+  <Step title="Create the management cluster secret">
+    Create a Secret containing the kubeconfig for accessing the management cluster:
+
+    ```bash
+    kubectl --namespace kubelb create secret generic kubelb-cluster \
+      --from-file=kubelb=/path/to/management-cluster-kubeconfig.yaml
+    ```
+
+    <Note>
+      The kubeconfig file must be named `kubelb` within the Secret. The Secret name can be customized using `kubelb.clusterSecretName` in values.yaml.
+    </Note>
+  </Step>
+
+  <Step title="Pull the Helm chart">
+    Download the KubeLB CCM Helm chart from the OCI registry:
+
+    ```bash
+    helm pull oci://quay.io/kubermatic/helm-charts/kubelb-ccm --version=v1.3.1 --untardir "." --untar
+    ```
+  </Step>
+
+  <Step title="Apply CRDs">
+    Install the Custom Resource Definitions (CRDs):
+
+    ```bash
+    kubectl apply -f kubelb-ccm/crds/
+    ```
+  </Step>
+
+  <Step title="Create values file">
+    Create a `values.yaml` file with your configuration. Here's a minimal example:
+
+    ```yaml values.yaml
+    kubelb:
+      # REQUIRED: Unique tenant identifier
+      tenantName: tenant-cluster-1
+      
+      # Secret containing management cluster kubeconfig
+      clusterSecretName: kubelb-cluster
+      
+      # Node address type for routing (ExternalIP or InternalIP)
+      nodeAddressType: ExternalIP
+      
+      # Use LoadBalancer class filtering (false = watch all LoadBalancer services)
+      useLoadBalancerClass: false
+    
+    # Resource limits
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+    ```
+
+    <Warning>
+      The `tenantName` must be unique across all tenant clusters connected to the same management cluster.
+    </Warning>
+  </Step>
+
+  <Step title="Install the Helm chart">
+    Install KubeLB CCM using Helm:
+
+    ```bash
+    helm install kubelb-ccm kubelb-ccm/ \
+      --namespace kubelb \
+      -f values.yaml
+    ```
+  </Step>
+</Steps>
+
+## Configuration Options
+
+### Basic Configuration
+
+<CodeGroup>
+```yaml Minimal Configuration
+kubelb:
+  tenantName: my-tenant
+  clusterSecretName: kubelb-cluster
+  nodeAddressType: ExternalIP
+```
+
+```yaml With LoadBalancer Class
+kubelb:
+  tenantName: my-tenant
+  clusterSecretName: kubelb-cluster
+  nodeAddressType: ExternalIP
+  useLoadBalancerClass: true
+```
+
+```yaml Internal IP Routing
+kubelb:
+  tenantName: my-tenant
+  clusterSecretName: kubelb-cluster
+  nodeAddressType: InternalIP
+```
+</CodeGroup>
+
+### Gateway API Support
+
+Enable Gateway API controllers for HTTPRoute, GRPCRoute, and Gateway resources:
+
+```yaml
+kubelb:
+  enableGatewayAPI: true
+  useGatewayClass: true
+  
+  # Optionally install and manage Gateway API CRDs
+  installGatewayAPICRDs: true
+  gatewayAPICRDsChannel: standard  # or 'experimental'
+```
+
+<Warning>
+  If `installGatewayAPICRDs` is false, Gateway API CRDs must be installed manually before enabling Gateway API support.
+</Warning>
+
+### Layer 7 Resource Controllers
+
+Control which Layer 7 controllers are enabled:
+
+```yaml
+kubelb:
+  # Ingress controller
+  disableIngressController: false
+  useIngressClass: true
+  
+  # Gateway API controllers
+  disableGatewayController: false
+  disableHTTPRouteController: false
+  disableGRPCRouteController: false
+```
+
+### Ingress to Gateway Conversion
+
+Automatically convert Ingress resources to Gateway API HTTPRoutes:
+
+```yaml
+kubelb:
+  ingressConversion:
+    enabled: true
+    gatewayName: kubelb
+    gatewayNamespace: kubelb
+    gatewayClass: kubelb
+    
+    # Optional: Filter by ingress class
+    ingressClass: "nginx"
+    
+    # Optional: Domain replacement
+    domainReplace: ".old.example.com"
+    domainSuffix: ".new.example.com"
+    
+    # Annotations for the created Gateway
+    gatewayAnnotations: "cert-manager.io/cluster-issuer=letsencrypt,external-dns.alpha.kubernetes.io/target=lb.example.com"
+    
+    # Feature flags
+    propagateExternalDnsAnnotations: true
+    copyTLSSecrets: true
+    disableEnvoyGatewayFeatures: false
+```
+
+<Note>
+  Set `standaloneMode: true` to run only the Ingress converter, disabling all other controllers.
+</Note>
+
+### Secret Synchronization
+
+Enable automatic secret synchronization for TLS certificates:
+
+```yaml
+kubelb:
+  enableSecretSynchronizer: true
+```
+
+Secrets labeled with `kubelb.k8c.io/managed-by: kubelb` will be automatically synchronized to the management cluster.
+
+### Resource Filtering
+
+Control which resources the CCM watches:
+
+<CodeGroup>
+```yaml Watch All Resources
+kubelb:
+  useLoadBalancerClass: false
+  useIngressClass: false
+  useGatewayClass: false
+```
+
+```yaml Class-Based Filtering
+kubelb:
+  # Only watch Services with loadBalancerClass: kubelb
+  useLoadBalancerClass: true
+  
+  # Only watch Ingresses with ingressClassName: kubelb
+  useIngressClass: true
+  
+  # Only watch Gateways with gatewayClassName: kubelb
+  useGatewayClass: true
+```
+</CodeGroup>
+
+### Monitoring
+
+Enable Prometheus metrics:
+
+```yaml
+serviceMonitor:
+  enabled: true
+
+metrics:
+  port: 9445
+```
+
+Enable Grafana dashboards:
+
+```yaml
+grafana:
+  dashboards:
+    enabled: true
+    annotations:
+      grafana_folder: "KubeLB"
+```
+
+## Security
+
+### Chart Signature Verification
+
+Verify the Helm chart signature before installation:
+
+```bash
+cosign verify quay.io/kubermatic/helm-charts/kubelb-ccm:v1.3.1 \
+  --certificate-identity-regexp="^https://github.com/kubermatic/kubelb/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+```
+
+### Image Signature Verification
+
+Verify the CCM container image:
+
+```bash
+cosign verify quay.io/kubermatic/kubelb-ccm:v1.3.1 \
+  --certificate-identity-regexp="^https://github.com/kubermatic/kubelb/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+```
+
+### Security Context
+
+The CCM runs with restrictive security settings:
+
+```yaml
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  runAsUser: 65532
+```
+
+### Kubeconfig Secret Security
+
+<Warning>
+  Ensure the kubeconfig Secret has minimal RBAC permissions in the management cluster. Only grant access to create and manage LoadBalancer and Route CRDs.
+</Warning>
+
+## Advanced Configuration
+
+### High Availability
+
+Run multiple replicas with leader election:
+
+```yaml
+replicaCount: 2
+
+kubelb:
+  enableLeaderElection: true
+```
+
+### Custom Volumes
+
+Mount additional volumes for certificates or configuration:
+
+```yaml
+extraVolumes:
+  - name: ca-certs
+    configMap:
+      name: custom-ca-certs
+
+extraVolumeMounts:
+  - name: ca-certs
+    mountPath: /etc/ssl/certs/custom
+    readOnly: true
+```
+
+### Priority Class
+
+Set pod priority for critical workloads:
+
+```yaml
+priorityClassName: "system-cluster-critical"
+```
+
+### Logging Configuration
+
+Adjust log verbosity:
+
+```yaml
+kubelb:
+  logLevel: debug  # debug, info, error, panic, or numeric value
+```
+
+## Multiple Tenant Clusters
+
+To connect multiple tenant clusters to the same management cluster:
+
+<Steps>
+  <Step title="Use unique tenant names">
+    Ensure each tenant cluster has a unique `tenantName` value:
+
+    ```yaml
+    # Cluster 1
+    kubelb:
+      tenantName: production-us-east
+    ```
+
+    ```yaml
+    # Cluster 2
+    kubelb:
+      tenantName: production-eu-west
+    ```
+  </Step>
+
+  <Step title="Use the same management cluster">
+    All tenant clusters should use the same management cluster kubeconfig in their secrets.
+  </Step>
+
+  <Step title="Install CCM in each cluster">
+    Repeat the installation steps in each tenant cluster with the appropriate tenant name.
+  </Step>
+</Steps>
+
+## Upgrading
+
+To upgrade KubeLB CCM to a new version:
+
+<Steps>
+  <Step title="Update CRDs">
+    ```bash
+    kubectl apply -f kubelb-ccm/crds/
+    ```
+  </Step>
+
+  <Step title="Upgrade Helm release">
+    ```bash
+    helm upgrade kubelb-ccm oci://quay.io/kubermatic/helm-charts/kubelb-ccm \
+      --version=v1.3.1 \
+      --namespace kubelb \
+      -f values.yaml
+    ```
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### Check CCM Status
+
+```bash
+kubectl get pods -n kubelb -l app.kubernetes.io/name=kubelb-ccm
+```
+
+### View CCM Logs
+
+```bash
+kubectl logs -n kubelb -l app.kubernetes.io/name=kubelb-ccm -f
+```
+
+### Verify Management Cluster Connection
+
+```bash
+kubectl exec -n kubelb deploy/kubelb-ccm -- \
+  cat /kubelb/kubelb | grep server
+```
+
+### Check LoadBalancer Resources
+
+Verify LoadBalancer CRDs are being created in the management cluster:
+
+```bash
+# Run on management cluster
+kubectl get loadbalancers -A
+```
+
+### Common Issues
+
+<Warning>
+  **CCM fails to connect to management cluster**: Verify the kubeconfig Secret is correctly created and the management cluster API is accessible from the tenant cluster.
+</Warning>
+
+<Warning>
+  **LoadBalancer services not getting external IPs**: Check that `useLoadBalancerClass` is set correctly and services have the appropriate `loadBalancerClass` annotation if filtering is enabled.
+</Warning>
+
+<Warning>
+  **Gateway API controllers failing to start**: Ensure Gateway API CRDs are installed or set `installGatewayAPICRDs: true`.
+</Warning>
+
+## Next Steps
+
+After installing the CCM:
+
+1. [Verify the installation](/installation/verification) to ensure the CCM is communicating with the Manager
+2. Create your first LoadBalancer service to test the setup

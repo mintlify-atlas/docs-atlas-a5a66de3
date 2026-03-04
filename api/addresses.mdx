@@ -1,0 +1,137 @@
+---
+title: Addresses
+description: API reference for the Addresses Custom Resource Definition
+---
+
+The Addresses resource provides a way to manage a list of endpoint addresses that can be referenced by LoadBalancer and Route resources. This allows for centralized management of IP addresses.
+
+## API Version
+
+`kubelb.k8c.io/v1alpha1`
+
+## Spec Fields
+
+<ParamField path="addresses" type="[]EndpointAddress" required>
+  Contains a list of addresses.
+  
+  Minimum items: 1
+</ParamField>
+
+<ParamField path="addresses[].ip" type="string" required>
+  The IP of the endpoint. This can be an IPv4 or IPv6 address. The IP address must not be IP CIDR, Loopback (127.0.0.0/8), link-local (169.254.0.0/16), or link-local multicast (224.0.0.0/24) addresses.
+</ParamField>
+
+<ParamField path="addresses[].hostname" type="string">
+  The hostname of this endpoint.
+</ParamField>
+
+## Status Fields
+
+The Addresses resource currently does not have any status fields.
+
+## Example
+
+### Basic Addresses
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Addresses
+metadata:
+  name: default
+  namespace: default
+spec:
+  addresses:
+    - ip: 10.10.1.1
+    - ip: 10.10.1.2
+    - ip: 10.10.1.3
+```
+
+### Addresses with Hostnames
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Addresses
+metadata:
+  name: cluster-nodes
+  namespace: tenant-a
+spec:
+  addresses:
+    - ip: 192.168.1.10
+      hostname: node1.cluster.local
+    - ip: 192.168.1.11
+      hostname: node2.cluster.local
+    - ip: 192.168.1.12
+      hostname: node3.cluster.local
+```
+
+### IPv6 Addresses
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Addresses
+metadata:
+  name: ipv6-nodes
+  namespace: default
+spec:
+  addresses:
+    - ip: 2001:db8::1
+      hostname: node1.ipv6.local
+    - ip: 2001:db8::2
+      hostname: node2.ipv6.local
+    - ip: 2001:db8::3
+      hostname: node3.ipv6.local
+```
+
+### Mixed IPv4 and IPv6 Addresses
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Addresses
+metadata:
+  name: dual-stack-nodes
+  namespace: default
+spec:
+  addresses:
+    - ip: 10.10.1.1
+      hostname: node1.cluster.local
+    - ip: 2001:db8::1
+      hostname: node1.cluster.local
+    - ip: 10.10.1.2
+      hostname: node2.cluster.local
+    - ip: 2001:db8::2
+      hostname: node2.cluster.local
+```
+
+## Usage
+
+Addresses resources are referenced by LoadBalancer and Route resources using the `addressesReference` field:
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: LoadBalancer
+metadata:
+  name: example-lb
+  namespace: default
+spec:
+  endpoints:
+    - name: my-endpoints
+      addressesReference:
+        name: default
+        namespace: default
+      ports:
+        - name: http
+          port: 8080
+          protocol: TCP
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+```
+
+## Notes
+
+- The default Addresses resource is typically named `default`
+- Addresses can be referenced across namespaces using the `addressesReference` field
+- When an Addresses resource is referenced, the `addresses` field in the LoadBalancer or Route endpoint is ignored
+- This provides a centralized way to manage IP addresses for multiple LoadBalancer or Route resources
+- IP addresses must be valid IPv4 or IPv6 addresses and cannot be CIDR ranges, loopback, link-local, or multicast addresses

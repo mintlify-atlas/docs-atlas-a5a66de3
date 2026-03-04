@@ -1,0 +1,561 @@
+---
+title: Monitoring
+description: Monitor KubeLB with Prometheus metrics and Grafana dashboards
+---
+
+KubeLB exposes comprehensive Prometheus metrics for monitoring the health and performance of your load balancing infrastructure.
+
+## Metrics Overview
+
+KubeLB components expose metrics on the following endpoints:
+
+| Component | Default Port | Endpoint |
+|-----------|--------------|----------|
+| Manager | `:9443` | `/metrics` |
+| CCM | `:9445` | `/metrics` |
+| Envoy Proxy | `:19001` | `/stats/prometheus` |
+
+## Manager Metrics
+
+Metrics exposed by the KubeLB Manager component running in the management cluster.
+
+### LoadBalancer Metrics
+
+Track LoadBalancer resources and reconciliation performance:
+
+```promql
+# Current number of LoadBalancer resources by tenant
+kubelb_manager_loadbalancers{namespace="tenant-production", tenant="production", topology="shared"}
+
+# LoadBalancer reconciliation rate
+rate(kubelb_manager_loadbalancer_reconcile_total{result="success"}[5m])
+
+# LoadBalancer reconciliation errors
+rate(kubelb_manager_loadbalancer_reconcile_total{result="error"}[5m])
+
+# P95 reconciliation latency
+histogram_quantile(0.95, rate(kubelb_manager_loadbalancer_reconcile_duration_seconds_bucket[5m]))
+```
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `kubelb_manager_loadbalancers` | Gauge | `namespace`, `tenant`, `topology` | Current number of LoadBalancer resources |
+| `kubelb_manager_loadbalancer_reconcile_total` | Counter | `namespace`, `result` | Total LoadBalancer reconciliation attempts |
+| `kubelb_manager_loadbalancer_reconcile_duration_seconds` | Histogram | `namespace` | LoadBalancer reconciliation duration |
+
+### Route Metrics
+
+Monitor Layer 7 routing (Ingress/Gateway API) resources:
+
+```promql
+# Current number of routes by type
+kubelb_manager_routes{route_type="ingress"}
+kubelb_manager_routes{route_type="httproute"}
+
+# Route reconciliation errors by type
+rate(kubelb_manager_route_reconcile_total{result="error"}[5m])
+
+# P99 route reconciliation latency
+histogram_quantile(0.99, rate(kubelb_manager_route_reconcile_duration_seconds_bucket[5m]))
+```
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `kubelb_manager_routes` | Gauge | `namespace`, `tenant`, `route_type` | Current number of Route resources |
+| `kubelb_manager_route_reconcile_total` | Counter | `namespace`, `route_type`, `result` | Total Route reconciliation attempts |
+| `kubelb_manager_route_reconcile_duration_seconds` | Histogram | `namespace` | Route reconciliation duration |
+
+### Tenant Metrics
+
+Track tenant resources and reconciliation:
+
+```promql
+# Total number of tenants
+kubelb_manager_tenants
+
+# Tenant reconciliation success rate
+rate(kubelb_manager_tenant_reconcile_total{result="success"}[5m])
+```
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `kubelb_manager_tenants` | Gauge | - | Current number of Tenant resources |
+| `kubelb_manager_tenant_reconcile_total` | Counter | `result` | Total Tenant reconciliation attempts |
+| `kubelb_manager_tenant_reconcile_duration_seconds` | Histogram | - | Tenant reconciliation duration |
+
+### Envoy Control Plane Metrics
+
+Monitor the xDS control plane for Envoy proxies:
+
+```promql
+# Current number of Envoy proxies
+kubelb_manager_envoy_proxies{topology="shared"}
+
+# Envoy snapshot resources
+kubelb_manager_envoycp_clusters{snapshot_name="default"}
+kubelb_manager_envoycp_listeners{snapshot_name="default"}
+kubelb_manager_envoycp_endpoints{snapshot_name="default"}
+
+# Snapshot update rate
+rate(kubelb_manager_envoycp_snapshot_updates_total[5m])
+
+# Control plane reconciliation latency
+histogram_quantile(0.95, rate(kubelb_manager_envoycp_reconcile_duration_seconds_bucket[5m]))
+```
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `kubelb_manager_envoy_proxies` | Gauge | `namespace`, `topology` | Current number of Envoy proxy deployments |
+| `kubelb_manager_envoycp_clusters` | Gauge | `snapshot_name` | Number of clusters in Envoy snapshot |
+| `kubelb_manager_envoycp_listeners` | Gauge | `snapshot_name` | Number of listeners in Envoy snapshot |
+| `kubelb_manager_envoycp_endpoints` | Gauge | `snapshot_name` | Number of endpoints in Envoy snapshot |
+| `kubelb_manager_envoycp_snapshot_updates_total` | Counter | `snapshot_name` | Total Envoy snapshot updates |
+| `kubelb_manager_envoycp_reconcile_total` | Counter | `result` | Total Envoy control plane reconciliations |
+| `kubelb_manager_envoycp_reconcile_duration_seconds` | Histogram | - | Envoy control plane reconciliation duration |
+
+### Port Allocator Metrics
+
+Monitor port allocation for Layer 4 load balancing:
+
+```promql
+# Allocated ports
+kubelb_manager_port_allocator_allocated_ports
+
+# Tracked endpoints
+kubelb_manager_port_allocator_endpoints
+```
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `kubelb_manager_port_allocator_allocated_ports` | Gauge | Current number of allocated ports |
+| `kubelb_manager_port_allocator_endpoints` | Gauge | Current number of tracked endpoints |
+
+### SyncSecret Metrics
+
+Track secret synchronization between tenant and management clusters:
+
+```promql
+# SyncSecret reconciliation rate
+rate(kubelb_manager_sync_secret_reconcile_total{result="success"}[5m])
+```
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `kubelb_manager_sync_secret_reconcile_total` | Counter | `namespace`, `result` | Total SyncSecret reconciliation attempts |
+| `kubelb_manager_sync_secret_reconcile_duration_seconds` | Histogram | `namespace` | SyncSecret reconciliation duration |
+
+## CCM Metrics
+
+Metrics exposed by the KubeLB CCM component running in tenant clusters.
+
+### Service Metrics
+
+Monitor LoadBalancer service reconciliation:
+
+```promql
+# Managed LoadBalancer services
+kubelb_ccm_managed_services{namespace="default"}
+
+# Service reconciliation rate
+rate(kubelb_ccm_service_reconcile_total{result="success"}[5m])
+
+# Service reconciliation errors
+rate(kubelb_ccm_service_reconcile_total{result="error"}[5m])
+```
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `kubelb_ccm_managed_services` | Gauge | `namespace` | Current number of managed LoadBalancer services |
+| `kubelb_ccm_service_reconcile_total` | Counter | `namespace`, `result` | Total Service reconciliation attempts |
+| `kubelb_ccm_service_reconcile_duration_seconds` | Histogram | `namespace` | Service reconciliation duration |
+
+### Ingress Metrics
+
+Track Ingress resource management:
+
+```promql
+# Managed Ingresses
+kubelb_ccm_managed_ingresses{namespace="default"}
+
+# Ingress reconciliation rate
+rate(kubelb_ccm_ingress_reconcile_total{result="success"}[5m])
+```
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `kubelb_ccm_managed_ingresses` | Gauge | `namespace` | Current number of managed Ingresses |
+| `kubelb_ccm_ingress_reconcile_total` | Counter | `namespace`, `result` | Total Ingress reconciliation attempts |
+| `kubelb_ccm_ingress_reconcile_duration_seconds` | Histogram | `namespace` | Ingress reconciliation duration |
+
+### Gateway API Metrics
+
+Monitor Gateway API resources:
+
+```promql
+# Managed Gateways
+kubelb_ccm_managed_gateways{namespace="default"}
+
+# HTTPRoute reconciliation rate
+rate(kubelb_ccm_httproute_reconcile_total{result="success"}[5m])
+
+# GRPCRoute reconciliation rate
+rate(kubelb_ccm_grpcroute_reconcile_total{result="success"}[5m])
+```
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `kubelb_ccm_managed_gateways` | Gauge | `namespace` | Current number of managed Gateways |
+| `kubelb_ccm_managed_httproutes` | Gauge | `namespace` | Current number of managed HTTPRoutes |
+| `kubelb_ccm_managed_grpcroutes` | Gauge | `namespace` | Current number of managed GRPCRoutes |
+| `kubelb_ccm_gateway_reconcile_total` | Counter | `namespace`, `result` | Total Gateway reconciliation attempts |
+| `kubelb_ccm_httproute_reconcile_total` | Counter | `namespace`, `result` | Total HTTPRoute reconciliation attempts |
+| `kubelb_ccm_grpcroute_reconcile_total` | Counter | `namespace`, `result` | Total GRPCRoute reconciliation attempts |
+| `kubelb_ccm_gateway_reconcile_duration_seconds` | Histogram | `namespace` | Gateway reconciliation duration |
+| `kubelb_ccm_httproute_reconcile_duration_seconds` | Histogram | `namespace` | HTTPRoute reconciliation duration |
+| `kubelb_ccm_grpcroute_reconcile_duration_seconds` | Histogram | `namespace` | GRPCRoute reconciliation duration |
+
+### Node Metrics
+
+Track node endpoints for load balancing:
+
+```promql
+# Total nodes in tenant cluster
+kubelb_ccm_nodes
+
+# Node reconciliation rate
+rate(kubelb_ccm_node_reconcile_total{result="success"}[5m])
+```
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `kubelb_ccm_nodes` | Gauge | - | Current number of nodes in the cluster |
+| `kubelb_ccm_node_reconcile_total` | Counter | `result` | Total Node reconciliation attempts |
+| `kubelb_ccm_node_reconcile_duration_seconds` | Histogram | - | Node reconciliation duration |
+
+### KubeLB Cluster Connection Metrics
+
+Monitor connectivity between CCM and the management cluster:
+
+```promql
+# KubeLB cluster connection status (1=connected, 0=disconnected)
+kubelb_ccm_kubelb_cluster_connected
+
+# Operations to KubeLB cluster
+rate(kubelb_ccm_kubelb_cluster_operations_total[5m])
+
+# P95 operation latency
+histogram_quantile(0.95, rate(kubelb_ccm_kubelb_cluster_latency_seconds_bucket[5m]))
+```
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `kubelb_ccm_kubelb_cluster_connected` | Gauge | - | Connection status (1=connected, 0=disconnected) |
+| `kubelb_ccm_kubelb_cluster_operations_total` | Counter | `operation`, `result` | Total operations to management cluster |
+| `kubelb_ccm_kubelb_cluster_latency_seconds` | Histogram | `operation` | Operation latency to management cluster |
+
+### SyncSecret Metrics
+
+```promql
+# SyncSecret reconciliation in tenant cluster
+rate(kubelb_ccm_sync_secret_reconcile_total{result="success"}[5m])
+```
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `kubelb_ccm_sync_secret_reconcile_total` | Counter | `namespace`, `result` | Total SyncSecret reconciliation attempts |
+| `kubelb_ccm_sync_secret_reconcile_duration_seconds` | Histogram | `namespace` | SyncSecret reconciliation duration |
+
+## EnvoyCP Metrics
+
+Metrics exposed by the Envoy Control Plane component (embedded in Manager).
+
+### Cache Metrics
+
+Monitor xDS cache performance:
+
+```promql
+# Cache hit rate
+rate(kubelb_envoy_control_plane_cache_hits_total[5m]) / 
+  (rate(kubelb_envoy_control_plane_cache_hits_total[5m]) + 
+   rate(kubelb_envoy_control_plane_cache_misses_total[5m]))
+
+# Cache clears
+rate(kubelb_envoy_control_plane_cache_clears_total[5m])
+```
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `kubelb_envoy_control_plane_cache_hits_total` | Counter | `snapshot_name` | Total cache hits for snapshot lookups |
+| `kubelb_envoy_control_plane_cache_misses_total` | Counter | `snapshot_name` | Total cache misses for snapshot lookups |
+| `kubelb_envoy_control_plane_cache_clears_total` | Counter | `snapshot_name` | Total cache clears |
+
+### gRPC Metrics
+
+Monitor xDS gRPC connections:
+
+```promql
+# Active gRPC connections from Envoy proxies
+kubelb_envoy_control_plane_grpc_connections
+
+# xDS request rate by resource type
+rate(kubelb_envoy_control_plane_grpc_requests_total[5m])
+
+# xDS response rate by resource type
+rate(kubelb_envoy_control_plane_grpc_responses_total[5m])
+```
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `kubelb_envoy_control_plane_grpc_connections` | Gauge | - | Current number of active gRPC connections |
+| `kubelb_envoy_control_plane_grpc_requests_total` | Counter | `type_url` | Total gRPC xDS requests |
+| `kubelb_envoy_control_plane_grpc_responses_total` | Counter | `type_url` | Total gRPC xDS responses |
+
+### Snapshot Metrics
+
+```promql
+# Snapshot generation latency
+histogram_quantile(0.95, rate(kubelb_envoy_control_plane_snapshot_generation_duration_seconds_bucket[5m]))
+
+# Snapshot resources
+kubelb_envoy_control_plane_clusters{snapshot_name="default"}
+kubelb_envoy_control_plane_listeners{snapshot_name="default"}
+kubelb_envoy_control_plane_routes{snapshot_name="default"}
+kubelb_envoy_control_plane_secrets{snapshot_name="default"}
+```
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `kubelb_envoy_control_plane_snapshots` | Gauge | - | Current number of active Envoy snapshots |
+| `kubelb_envoy_control_plane_snapshot_updates_total` | Counter | `snapshot_name` | Total Envoy snapshot updates |
+| `kubelb_envoy_control_plane_snapshot_generation_duration_seconds` | Histogram | `snapshot_name` | Snapshot generation duration |
+| `kubelb_envoy_control_plane_clusters` | Gauge | `snapshot_name` | Number of clusters in snapshot |
+| `kubelb_envoy_control_plane_listeners` | Gauge | `snapshot_name` | Number of listeners in snapshot |
+| `kubelb_envoy_control_plane_routes` | Gauge | `snapshot_name` | Number of routes in snapshot |
+| `kubelb_envoy_control_plane_secrets` | Gauge | `snapshot_name` | Number of secrets in snapshot |
+
+## Label Reference
+
+Common labels used across KubeLB metrics:
+
+| Label | Description | Example Values |
+|-------|-------------|----------------|
+| `namespace` | Kubernetes namespace | `tenant-production`, `kubelb` |
+| `tenant` | KubeLB tenant identifier | `production`, `staging` |
+| `result` | Reconciliation result | `success`, `error`, `skipped` |
+| `route_type` | Type of route resource | `ingress`, `gateway`, `httproute`, `grpcroute` |
+| `topology` | Envoy proxy topology | `shared` |
+| `operation` | Operation type | `create`, `update`, `delete` |
+| `snapshot_name` | Envoy xDS snapshot ID | `default`, `tenant-production` |
+| `type_url` | Envoy xDS resource type | `type.googleapis.com/envoy.config.cluster.v3.Cluster` |
+
+## Prometheus Configuration
+
+### ServiceMonitor (Prometheus Operator)
+
+Create ServiceMonitors to automatically discover KubeLB metrics endpoints:
+
+<CodeGroup>
+```yaml Manager ServiceMonitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kubelb-manager
+  namespace: kubelb
+spec:
+  selector:
+    matchLabels:
+      app: kubelb-manager
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+```
+
+```yaml CCM ServiceMonitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kubelb-ccm
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: kubelb-ccm
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+```
+</CodeGroup>
+
+### Manual Prometheus Scrape Configuration
+
+If not using Prometheus Operator, add scrape configs manually:
+
+```yaml prometheus.yml
+scrape_configs:
+  - job_name: 'kubelb-manager'
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names:
+            - kubelb
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_label_app]
+        regex: kubelb-manager
+        action: keep
+
+  - job_name: 'kubelb-ccm'
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names:
+            - kube-system
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_label_app]
+        regex: kubelb-ccm
+        action: keep
+```
+
+## Alerting Rules
+
+### Recommended Alerts
+
+<CodeGroup>
+```yaml High Error Rate
+groups:
+  - name: kubelb_alerts
+    rules:
+      - alert: KubeLBHighErrorRate
+        expr: |
+          sum(rate(kubelb_manager_loadbalancer_reconcile_total{result="error"}[5m])) 
+          / sum(rate(kubelb_manager_loadbalancer_reconcile_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "KubeLB Manager has high error rate"
+          description: "More than 10% of LoadBalancer reconciliations are failing"
+```
+
+```yaml CCM Disconnected
+- alert: KubeLBCCMDisconnected
+  expr: kubelb_ccm_kubelb_cluster_connected == 0
+  for: 2m
+  labels:
+    severity: critical
+  annotations:
+    summary: "KubeLB CCM disconnected from management cluster"
+    description: "CCM cannot communicate with the KubeLB management cluster"
+```
+
+```yaml High Reconciliation Latency
+- alert: KubeLBHighLatency
+  expr: |
+    histogram_quantile(0.95, 
+      rate(kubelb_manager_loadbalancer_reconcile_duration_seconds_bucket[5m])
+    ) > 10
+  for: 10m
+  labels:
+    severity: warning
+  annotations:
+    summary: "KubeLB Manager has high reconciliation latency"
+    description: "P95 LoadBalancer reconciliation time exceeds 10 seconds"
+```
+</CodeGroup>
+
+## Grafana Dashboards
+
+### Dashboard Templates
+
+KubeLB provides pre-built Grafana dashboard templates. Import these dashboards using the Grafana UI or provision them via ConfigMaps.
+
+<Steps>
+  <Step title="Manager Dashboard">
+    Monitors Manager metrics including LoadBalancer reconciliation, Envoy control plane, and port allocation.
+    
+    Key panels:
+    - LoadBalancer count by tenant
+    - Reconciliation success rate
+    - Envoy proxy count and snapshot resources
+    - P95/P99 reconciliation latency
+  </Step>
+  
+  <Step title="CCM Dashboard">
+    Tracks CCM metrics including service reconciliation, node endpoints, and management cluster connectivity.
+    
+    Key panels:
+    - Managed services count
+    - CCM connection status
+    - Reconciliation error rate
+    - Operation latency to management cluster
+  </Step>
+  
+  <Step title="Envoy Control Plane Dashboard">
+    Visualizes xDS control plane metrics including cache performance and gRPC connections.
+    
+    Key panels:
+    - Active gRPC connections
+    - xDS request/response rate
+    - Cache hit rate
+    - Snapshot generation time
+  </Step>
+</Steps>
+
+### Example Dashboard Queries
+
+<AccordionGroup>
+<Accordion title="LoadBalancer Success Rate">
+```promql
+sum(rate(kubelb_manager_loadbalancer_reconcile_total{result="success"}[5m])) 
+/ sum(rate(kubelb_manager_loadbalancer_reconcile_total[5m]))
+```
+</Accordion>
+
+<Accordion title="Top Namespaces by LoadBalancer Count">
+```promql
+topk(10, sum by (namespace) (kubelb_manager_loadbalancers))
+```
+</Accordion>
+
+<Accordion title="Envoy Proxy Resource Utilization">
+```promql
+sum by (pod) (container_memory_working_set_bytes{pod=~"kubelb-envoy-.*"})
+```
+</Accordion>
+
+<Accordion title="CCM to Management Cluster Latency">
+```promql
+histogram_quantile(0.95, 
+  sum(rate(kubelb_ccm_kubelb_cluster_latency_seconds_bucket[5m])) by (le)
+)
+```
+</Accordion>
+</AccordionGroup>
+
+## Health Checks
+
+Both Manager and CCM expose health check endpoints:
+
+```bash
+# Manager health checks
+curl http://localhost:8081/healthz
+curl http://localhost:8081/readyz
+
+# CCM health checks
+curl http://localhost:8081/healthz
+curl http://localhost:8081/readyz
+```
+
+These endpoints return HTTP 200 when healthy and are used by Kubernetes liveness and readiness probes.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Debug issues using logs and metrics
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/operations/configuration">
+    Tune KubeLB configuration for your environment
+  </Card>
+</CardGroup>

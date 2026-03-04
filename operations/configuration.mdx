@@ -1,0 +1,373 @@
+---
+title: Configuration
+description: Learn how to configure KubeLB Manager and CCM components
+---
+
+KubeLB provides comprehensive configuration options through the Config CRD and command-line flags for both the Manager and CCM components.
+
+## Config CRD
+
+The Config CRD is the primary way to configure KubeLB Manager behavior. It's a cluster-scoped resource that defines global settings for load balancing, ingress, Gateway API, DNS, and certificates.
+
+### Configuration Structure
+
+The Config resource is typically named `default` and created in the `kubelb` namespace:
+
+```yaml
+apiVersion: kubelb.k8c.io/v1alpha1
+kind: Config
+metadata:
+  name: default
+  namespace: kubelb
+spec:
+  envoyProxy:
+    topology: shared
+    replicas: 3
+    useDaemonset: false
+  loadBalancer: {}
+  ingress: {}
+  gatewayAPI: {}
+  dns:
+    wildcardDomain: "*.example.com"
+  certificates: {}
+```
+
+### Envoy Proxy Configuration
+
+Configure the Envoy proxy deployment topology and resource settings:
+
+<CodeGroup>
+```yaml Shared Topology (Recommended)
+envoyProxy:
+  topology: shared  # All tenants share the same Envoy deployment
+  replicas: 3
+  useDaemonset: false
+  singlePodPerNode: true
+```
+
+```yaml DaemonSet Mode
+envoyProxy:
+  topology: shared
+  useDaemonset: true  # Run Envoy as DaemonSet on all nodes
+  singlePodPerNode: false  # Ignored when useDaemonset is true
+```
+
+```yaml Custom Resources
+envoyProxy:
+  topology: shared
+  replicas: 5
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+```
+</CodeGroup>
+
+<Note>
+The `dedicated` and `global` topology values are deprecated. Both now default to `shared` topology.
+</Note>
+
+#### Envoy Proxy Options
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `topology` | string | `shared` | Deployment topology: `shared` (only supported value) |
+| `useDaemonset` | bool | `false` | Run Envoy as DaemonSet instead of Deployment |
+| `replicas` | int32 | `3` | Number of replicas (ignored if `useDaemonset` is true) |
+| `singlePodPerNode` | bool | `false` | Spread replicas across nodes using pod anti-affinity |
+| `nodeSelector` | map[string]string | - | Node selector for Envoy pods |
+| `tolerations` | []Toleration | - | Tolerations for Envoy pods |
+| `affinity` | Affinity | - | Custom affinity rules for Envoy pods |
+| `image` | string | - | Custom Envoy image (overrides default) |
+
+### Graceful Shutdown Configuration
+
+Configure graceful shutdown behavior for Envoy pods:
+
+```yaml
+envoyProxy:
+  gracefulShutdown:
+    disabled: false
+    drainTimeout: "60s"
+    minDrainDuration: "5s"
+    terminationGracePeriodSeconds: 300
+    shutdownManagerImage: "docker.io/envoyproxy/gateway:v1.3.0"
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `disabled` | bool | `false` | Disable graceful shutdown |
+| `drainTimeout` | duration | `60s` | Maximum time to wait for connections to drain |
+| `minDrainDuration` | duration | `5s` | Minimum time before checking connection count |
+| `terminationGracePeriodSeconds` | int64 | `300` | Pod termination grace period |
+| `shutdownManagerImage` | string | `docker.io/envoyproxy/gateway:v1.3.0` | Shutdown manager sidecar image |
+
+### Overload Manager Configuration
+
+Protect Envoy from resource exhaustion:
+
+```yaml
+envoyProxy:
+  overloadManager:
+    enabled: true
+    maxActiveDownstreamConnections: 50000
+    maxHeapSizeBytes: 2147483648  # 2GB
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | bool | Enable overload manager |
+| `maxActiveDownstreamConnections` | uint64 | Maximum active downstream connections |
+| `maxHeapSizeBytes` | uint64 | Maximum heap size before rejecting connections |
+
+### DNS Configuration
+
+Configure DNS management and automation:
+
+```yaml
+dns:
+  wildcardDomain: "*.apps.example.com"
+  allowExplicitHostnames: true
+  useDNSAnnotations: true
+  useCertificateAnnotations: true
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `wildcardDomain` | string | Base domain for wildcard DNS records |
+| `allowExplicitHostnames` | bool | Allow explicit hostnames in LoadBalancer.Spec.Hostname |
+| `useDNSAnnotations` | bool | Add DNS annotations to DNS resources |
+| `useCertificateAnnotations` | bool | Add certificate annotations to certificate resources |
+
+### Annotation Settings
+
+Control which annotations are propagated from tenant resources:
+
+```yaml
+propagatedAnnotations:
+  "cert-manager.io/cluster-issuer": "letsencrypt-prod"
+  "external-dns.alpha.kubernetes.io/hostname": ""
+propagateAllAnnotations: false
+defaultAnnotations:
+  service:
+    "kubelb.k8c.io/default-annotation": "value"
+  ingress:
+    "nginx.ingress.kubernetes.io/ssl-redirect": "true"
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `propagatedAnnotations` | map[string]string | Annotations to propagate (empty value allows any) |
+| `propagateAllAnnotations` | bool | Propagate all annotations (ignores propagatedAnnotations) |
+| `defaultAnnotations` | map[AnnotatedResource]Annotations | Default annotations per resource type |
+
+Supported `AnnotatedResource` values: `all`, `service`, `ingress`, `gateway`, `httproute`, `grpcroute`, `tcproute`, `udproute`, `tlsroute`
+
+## Manager Command-Line Flags
+
+The KubeLB Manager (`kubelb`) supports the following flags:
+
+### Basic Options
+
+```bash
+kubelb \
+  --namespace=kubelb \
+  --metrics-addr=:9443 \
+  --health-probe-bind-address=:8081 \
+  --enable-leader-election=true
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--namespace` | `kubelb` | Namespace where the controller runs |
+| `--metrics-addr` | `:9443` | Metrics endpoint bind address |
+| `--health-probe-bind-address` | `:8081` | Health probe endpoint bind address |
+| `--enable-leader-election` | `true` | Enable leader election for HA deployments |
+| `--kubeconfig` | - | Path to kubeconfig (only for out-of-cluster) |
+
+### Envoy Control Plane Options
+
+```bash
+kubelb \
+  --listen-address=:8001 \
+  --enable-gateway-api=false
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--listen-address` | `:8001` | Address for Envoy xDS control plane |
+| `--enable-gateway-api` | `false` | Enable Gateway API and controllers |
+| `--debug` | `false` | Enable debug mode for verbose logging |
+
+<Warning>
+Gateway API CRDs must be installed before enabling `--enable-gateway-api`. The controller will fail to start if CRDs are missing.
+</Warning>
+
+### Deprecated Flags
+
+| Flag | Status | Notes |
+|------|--------|-------|
+| `--enable-tenant-migration` | Deprecated | NOOP - controller has been removed |
+
+## CCM Command-Line Flags
+
+The KubeLB Cloud Controller Manager (`kubelb-ccm`) runs in tenant clusters and propagates resources to the management cluster.
+
+### Required Flags
+
+```bash
+kubelb-ccm \
+  --cluster-name=production \
+  --kubelb-kubeconfig=/etc/kubelb/kubeconfig
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--cluster-name` | Yes | Unique cluster/tenant name (auto-prefixed with `tenant-` if not present) |
+| `--kubelb-kubeconfig` | Yes | Path to KubeLB management cluster kubeconfig |
+
+### Service Controller Options
+
+```bash
+kubelb-ccm \
+  --enable-cloud-provider=true \
+  --use-loadbalancer-class=false \
+  --node-address-type=ExternalIP
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enable-cloud-provider` | `true` | Enable cloud controller behavior for LoadBalancer status |
+| `--use-loadbalancer-class` | `false` | Filter services by LoadBalancerClass `kubelb` |
+| `--node-address-type` | `ExternalIP` | Address type for endpoints: `ExternalIP`, `InternalIP`, or `Hostname` |
+
+### Ingress and Gateway API Options
+
+```bash
+kubelb-ccm \
+  --use-ingress-class=true \
+  --use-gateway-class=true \
+  --enable-gateway-api=false \
+  --disable-ingress-controller=false \
+  --disable-gateway-controller=false \
+  --disable-httproute-controller=false \
+  --disable-grpcroute-controller=false
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--use-ingress-class` | `true` | Filter Ingresses with `ingressClassName: kubelb` |
+| `--use-gateway-class` | `true` | Filter Gateways with `gatewayClassName: kubelb` |
+| `--enable-gateway-api` | `false` | Enable Gateway API support |
+| `--disable-ingress-controller` | `false` | Disable Ingress controller |
+| `--disable-gateway-controller` | `false` | Disable Gateway controller |
+| `--disable-httproute-controller` | `false` | Disable HTTPRoute controller |
+| `--disable-grpcroute-controller` | `false` | Disable GRPCRoute controller |
+
+### Gateway API CRD Management
+
+```bash
+kubelb-ccm \
+  --install-gateway-api-crds=false \
+  --gateway-api-crds-channel=standard
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--install-gateway-api-crds` | `false` | Automatically install Gateway API CRDs |
+| `--gateway-api-crds-channel` | `standard` | CRD channel: `standard` or `experimental` |
+
+### Secret Synchronization
+
+```bash
+kubelb-ccm \
+  --enable-secret-synchronizer=false
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enable-secret-synchronizer` | `false` | Auto-convert Secrets with label `kubelb.k8c.io/managed-by: kubelb` to SyncSecrets |
+
+### High Availability Options
+
+```bash
+kubelb-ccm \
+  --enable-leader-election=true \
+  --leader-election-namespace=""
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enable-leader-election` | `true` | Enable leader election |
+| `--leader-election-namespace` | - | Namespace for leader election lease |
+
+### Observability Options
+
+```bash
+kubelb-ccm \
+  --metrics-addr=:9445 \
+  --health-probe-bind-address=:8081
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--metrics-addr` | `:9445` | Metrics endpoint bind address |
+| `--health-probe-bind-address` | `:8081` | Health probe endpoint bind address |
+| `--kubeconfig` | - | Path to tenant cluster kubeconfig |
+
+## Configuration Best Practices
+
+<AccordionGroup>
+<Accordion title="Production Deployment">
+- Use `shared` topology with at least 3 replicas for high availability
+- Enable `singlePodPerNode` to spread Envoy pods across nodes
+- Configure resource requests and limits based on expected traffic
+- Enable graceful shutdown with appropriate drain timeouts
+- Set up overload manager to prevent resource exhaustion
+</Accordion>
+
+<Accordion title="Multi-Tenant Environments">
+- Use unique `cluster-name` for each tenant cluster
+- Configure `propagatedAnnotations` to control annotation propagation
+- Use `use-loadbalancer-class` and `use-ingress-class` for explicit opt-in
+- Enable secret synchronization for centralized certificate management
+</Accordion>
+
+<Accordion title="Gateway API Migration">
+- Install Gateway API CRDs before enabling Gateway API support
+- Use `--gateway-api-crds-channel=standard` for stable features
+- Enable Gateway API gradually (start with `--enable-gateway-api=true`)
+- Test with `--use-gateway-class=true` to filter specific gateways
+</Accordion>
+
+<Accordion title="DNS and Certificates">
+- Configure `wildcardDomain` for automatic hostname generation
+- Enable `useDNSAnnotations` for external-dns integration
+- Enable `useCertificateAnnotations` for cert-manager integration
+- Set `allowExplicitHostnames` when using custom domains
+</Accordion>
+</AccordionGroup>
+
+## Environment Variables
+
+Both Manager and CCM support standard Kubernetes environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `NAMESPACE` | Alternative to `--namespace` flag (Manager only) |
+| `KUBECONFIG` | Alternative to `--kubeconfig` flag |
+| `HOME` | Used to find default kubeconfig location |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Monitoring" icon="chart-line" href="/operations/monitoring">
+    Set up Prometheus metrics and Grafana dashboards
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Debug common issues and check logs
+  </Card>
+</CardGroup>

@@ -1,0 +1,130 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "KubeLB",
+  "projectDescription": "Kubernetes native tool for centrally managing Layer 4 and 7 load balancers across multi-cloud and on-premise environments",
+  "theme": "aspen",
+  "primaryColor": "#f5e6de",
+  "lightColor": "#8c7c7c",
+  "darkColor": "#4f4a47",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction",
+              "architecture",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Installation",
+            "pages": [
+              "installation/prerequisites",
+              "installation/manager",
+              "installation/ccm",
+              "installation/verification"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/hub-and-spoke",
+              "concepts/load-balancing",
+              "concepts/tenants",
+              "concepts/envoy-topology"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/layer4-services",
+              "guides/layer7-routing",
+              "guides/ingress",
+              "guides/gateway-api",
+              "guides/multi-cluster",
+              "guides/dns-certificates"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/configuration",
+              "operations/monitoring",
+              "operations/troubleshooting",
+              "operations/upgrading"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "security/overview",
+              "security/tenant-isolation",
+              "security/secret-management"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Custom Resources",
+            "pages": [
+              "api/loadbalancer",
+              "api/route",
+              "api/tenant",
+              "api/config",
+              "api/addresses",
+              "api/syncsecret"
+            ]
+          },
+          {
+            "group": "Controllers",
+            "pages": [
+              "api/controllers/manager",
+              "api/controllers/ccm"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Contributing",
+        "groups": [
+          {
+            "group": "Development",
+            "pages": [
+              "contributing/getting-started",
+              "contributing/architecture",
+              "contributing/testing",
+              "contributing/code-generation"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Centralized Layer 4 and Layer 7 load balancing",
+    "Multi-cluster management with hub-and-spoke architecture",
+    "Envoy-based traffic routing with xDS control plane",
+    "Support for Services, Ingress, and Gateway API",
+    "Multi-tenant isolation and security",
+    "Flexible Envoy proxy deployment topologies",
+    "DNS and TLS certificate automation",
+    "Prometheus metrics and monitoring"
+  ],
+  "publicApiSurface": [
+    "LoadBalancer CRD (kubelb.k8c.io/v1alpha1)",
+    "Route CRD (kubelb.k8c.io/v1alpha1)",
+    "Tenant CRD (kubelb.k8c.io/v1alpha1)",
+    "Config CRD (kubelb.k8c.io/v1alpha1)",
+    "Addresses CRD (kubelb.k8c.io/v1alpha1)",
+    "SyncSecret CRD (kubelb.k8c.io/v1alpha1)",
+    "KubeLB Manager - Helm chart (oci://quay.io/kubermatic/helm-charts/kubelb-manager)",
+    "KubeLB CCM - Helm chart (oci://quay.io/kubermatic/helm-charts/kubelb-ccm)",
+    "Envoy xDS Control Plane API"
+  ]
+}
